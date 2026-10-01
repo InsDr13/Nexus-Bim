@@ -1,0 +1,6 @@
+{
+  "name": "Nexus BIM - Marketplace de Produits Numériques",
+  "description": "Plateforme multi-vendeurs pour professionnels de l'architecture, BIM, ingénierie et design. Modèles 3D, plans de construction, documents PDF, logiciels et clés d'activation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
