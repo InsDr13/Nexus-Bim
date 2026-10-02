@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Mail, 
@@ -8,7 +8,6 @@ import {
   Briefcase, 
   ArrowRight, 
   ArrowLeft,
-  ShieldCheck, 
   Check, 
   Sparkles,
   Link as LinkIcon,
@@ -18,11 +17,13 @@ import {
   ExternalLink,
   Crown,
   KeyRound,
-  Layers,
-  Phone
+  Phone,
+  MapPin,
+  MessageCircle,
+  Building2
 } from 'lucide-react';
-import { supabaseAuthService, DEFAULT_SUPER_ADMIN } from '../../services/supabase';
-import { UserProfile, UserRole } from '../../types/database';
+import { supabaseAuthService } from '../../services/supabase';
+import { UserProfile } from '../../types/database';
 import { NexusLogo } from '../common/NexusLogo';
 
 interface AuthModalProps {
@@ -40,10 +41,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   initialMode = 'login',
   onViewStorefront,
 }) => {
-  // Mode : 'login' ou 'signup_vendor' (Le client crée son compte au panier lors du paiement)
-  const [mode, setMode] = useState<'login' | 'signup_vendor'>(
-    initialMode === 'signup_vendor' ? 'signup_vendor' : 'login'
-  );
+  // Mode : 'login' ou 'signup_vendor'
+  const [mode, setMode] = useState<'login' | 'signup_vendor'>('login');
 
   // Form Fields - Login
   const [loginIdentifier, setLoginIdentifier] = useState('');
@@ -55,19 +54,41 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [name, setName] = useState('');
+  
+  // Identité de la Maison / Entreprise
   const [storeName, setStoreName] = useState('');
   const [storeSlug, setStoreSlug] = useState('');
+  const [phone, setPhone] = useState('');
+  const [whatsapp, setWhatsapp] = useState('');
+  const [address, setAddress] = useState('');
+
+  // Spécialité & Présentation
   const [specialty, setSpecialty] = useState('Modélisation Revit & openBIM');
   const [customSpecialty, setCustomSpecialty] = useState('');
-  const [phone, setPhone] = useState('');
+  const [bio, setBio] = useState('');
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Vendor Created Celebration View State
+  // Vendor Created Celebration View State (Reset upon open/close)
   const [createdVendorUser, setCreatedVendorUser] = useState<UserProfile | null>(null);
   const [copiedCreatedLink, setCopiedCreatedLink] = useState(false);
+
+  // RESET STATE ON OPEN / LOGOUT / MODE CHANGE
+  // Résout le problème du modal bloqué sur le message de succès de la précédente boutique créée
+  useEffect(() => {
+    if (isOpen) {
+      setCreatedVendorUser(null);
+      setErrorMsg(null);
+      setCopiedCreatedLink(false);
+      setCarouselStep(1);
+      if (initialMode === 'signup_vendor') {
+        setMode('signup_vendor');
+      } else {
+        setMode('login');
+      }
+    }
+  }, [isOpen, initialMode]);
 
   if (!isOpen) return null;
 
@@ -77,6 +98,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     const slug = val
       .toLowerCase()
       .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]/g, '-')
       .replace(/-+/g, '-');
     setStoreSlug(slug);
@@ -95,7 +118,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     if (carouselStep === 1) {
       if (!username.trim()) {
-        setErrorMsg('Veuillez renseigner un nom d\'utilisateur.');
+        setErrorMsg('Veuillez renseigner un nom d\'utilisateur (identifiant de connexion).');
         return;
       }
       if (!email.trim() || !email.includes('@')) {
@@ -112,16 +135,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
       setCarouselStep(2);
     } else if (carouselStep === 2) {
-      if (!name.trim()) {
-        setErrorMsg('Veuillez renseigner votre nom complet.');
-        return;
-      }
       if (!storeName.trim()) {
-        setErrorMsg('Veuillez renseigner le nom de votre atelier / boutique.');
+        setErrorMsg('Veuillez renseigner le nom de la Maison / Studio / Entreprise.');
         return;
       }
       if (!storeSlug.trim()) {
-        setErrorMsg('Veuillez choisir un identifiant unique (URL) pour votre boutique.');
+        setErrorMsg('Veuillez choisir un identifiant unique (URL) pour votre vitrine.');
         return;
       }
       setCarouselStep(3);
@@ -144,7 +163,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       if (mode === 'login') {
         if (!loginIdentifier.trim()) {
-          throw new Error('Veuillez renseigner votre nom d\'utilisateur ou email.');
+          throw new Error('Veuillez renseigner votre nom d\'utilisateur ou adresse email.');
         }
         if (!loginPassword) {
           throw new Error('Veuillez saisir votre mot de passe.');
@@ -169,15 +188,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           ? (customSpecialty.trim() || 'Modélisation & Ingénierie BIM')
           : specialty;
 
+        const houseName = storeName.trim();
+
         const { user, error } = await supabaseAuthService.signUpVendor({
           username: username.trim(),
           email: email.trim(),
           password,
-          name: name.trim(),
-          storeName: storeName.trim() || name.trim(),
+          name: houseName, // Le nom principal est le nom de la maison/studio
+          storeName: houseName,
           storeSlug: storeSlug.trim(),
           specialty: finalSpecialty,
-          phone: phone.trim()
+          phone: phone.trim(),
+          whatsapp: whatsapp.trim() || phone.trim(),
+          address: address.trim(),
+          contactEmail: email.trim(),
+          bio: bio.trim() || `Atelier officiel ${houseName}. Spécialiste en ${finalSpecialty}.`
         });
 
         if (error) throw new Error(error);
@@ -200,17 +225,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 animate-fadeIn font-['Plus_Jakarta_Sans',sans-serif]">
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 animate-fadeIn font-['Plus_Jakarta_Sans',sans-serif]">
       <div 
-        className="w-full max-w-lg bg-[#0a101f] border border-slate-700/80 rounded-3xl shadow-2xl overflow-hidden text-slate-100 flex flex-col max-h-[92vh]"
+        className="w-full max-w-xl bg-[#0b1222] border border-slate-700/80 rounded-3xl shadow-2xl overflow-hidden text-slate-100 flex flex-col max-h-[94vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="p-5 sm:p-6 pb-4 border-b border-slate-800 flex items-center justify-between shrink-0 bg-[#090e1a]">
+        <div className="p-5 sm:p-6 pb-4 border-b border-slate-800/90 flex items-center justify-between shrink-0 bg-[#080d19]">
           <NexusLogo size="sm" showSubtitle />
           <button 
-            onClick={onClose}
-            className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            onClick={() => {
+              setCreatedVendorUser(null);
+              onClose();
+            }}
+            className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            title="Fermer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -219,19 +248,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {/* 1. CREATED VENDOR SUCCESS VIEW */}
         {createdVendorUser ? (
           <div className="p-6 sm:p-8 space-y-6 text-center overflow-y-auto animate-fadeIn">
-            <div className="w-18 h-18 rounded-3xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto shadow-xl shadow-emerald-500/10">
-              <CheckCircle2 className="w-10 h-10" />
+            <div className="w-20 h-20 rounded-3xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto shadow-xl shadow-emerald-500/10">
+              <CheckCircle2 className="w-11 h-11" />
             </div>
 
             <div className="space-y-2">
-              <span className="px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-bold font-mono uppercase tracking-wider">
+              <span className="px-3.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-bold font-mono uppercase tracking-wider">
                 Compte Vendeur Créé avec Succès
               </span>
               <h3 className="font-['EB_Garamond',serif] text-2xl sm:text-3xl font-bold text-white pt-1">
                 Bienvenue dans Nexus BIM, {createdVendorUser.name} !
               </h3>
-              <p className="text-sm text-slate-300 max-w-md mx-auto leading-relaxed">
-                Votre boutique <strong>« {createdVendorUser.company || storeName} »</strong> est maintenant enregistrée. Vous pouvez dès à présent ajouter vos modèles BIM et recevoir vos paiements directs en USD.
+              <p className="text-sm sm:text-base text-slate-300 max-w-md mx-auto leading-relaxed">
+                Votre boutique officielle <strong>« {createdVendorUser.company || storeName} »</strong> est prête. Vos informations et coordonnées ont été conservées dans votre espace de gestion.
               </p>
             </div>
 
@@ -262,7 +291,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
 
               <div className="p-3 rounded-xl bg-blue-950/40 border border-blue-500/20 text-xs sm:text-sm text-blue-200 leading-relaxed">
-                💡 <strong>Personnalisation complète :</strong> Vous pouvez compléter vos informations supplémentaires (logo, bannière, adresse physique, téléphone, WhatsApp professionnel et email de contact) dans l'onglet <strong>« Ma boutique »</strong> de votre espace vendeur.
+                💡 <strong>Coordonnées conservées :</strong> Vous pouvez uploader le logo et la bannière de votre Maison dans l'onglet <strong>« Ma boutique & coordonnées »</strong> de votre espace vendeur.
               </div>
             </div>
 
@@ -270,10 +299,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <div className="space-y-3 pt-2">
               <button
                 onClick={() => {
-                  onSuccess(createdVendorUser);
+                  const userToPass = createdVendorUser;
+                  setCreatedVendorUser(null);
+                  onSuccess(userToPass);
                   onClose();
                 }}
-                className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-sm sm:text-base font-bold shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2.5 transition-all cursor-pointer"
+                className="w-full py-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-base font-bold shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2.5 transition-all cursor-pointer"
               >
                 <span>Accéder à mon tableau de bord vendeur</span>
                 <ArrowRight className="w-5 h-5" />
@@ -283,14 +314,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    onViewStorefront(createdVendorUser.store_slug!);
-                    onSuccess(createdVendorUser);
+                    const userToPass = createdVendorUser;
+                    setCreatedVendorUser(null);
+                    onViewStorefront(userToPass.store_slug!);
+                    onSuccess(userToPass);
                     onClose();
                   }}
-                  className="w-full py-3 rounded-2xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-sm font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  className="w-full py-3.5 rounded-2xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-sm sm:text-base font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <ExternalLink className="w-4 h-4" />
-                  <span>Apercevoir ma page vitrine de produits</span>
+                  <span>Apercevoir ma page vitrine officielle</span>
                 </button>
               )}
             </div>
@@ -298,11 +331,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         ) : (
           <>
             {/* Mode Switchers: Se Connecter vs Devenir Vendeur */}
-            <div className="flex border-b border-slate-800 text-sm font-bold shrink-0 bg-[#0c1326]">
+            <div className="flex border-b border-slate-800 text-sm sm:text-base font-bold shrink-0 bg-[#090e19]">
               <button
                 type="button"
-                onClick={() => { setMode('login'); setErrorMsg(null); }}
-                className={`flex-1 py-3.5 text-center transition-all border-b-2 flex items-center justify-center gap-2 ${
+                onClick={() => { 
+                  setMode('login'); 
+                  setErrorMsg(null); 
+                  setCreatedVendorUser(null);
+                }}
+                className={`flex-1 py-4 text-center transition-all border-b-2 flex items-center justify-center gap-2 cursor-pointer ${
                   mode === 'login' 
                     ? 'border-blue-500 text-blue-400 bg-blue-500/10 font-bold' 
                     : 'border-transparent text-slate-400 hover:text-white'
@@ -314,72 +351,77 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => { setMode('signup_vendor'); setErrorMsg(null); setCarouselStep(1); }}
-                className={`flex-1 py-3.5 text-center transition-all border-b-2 flex items-center justify-center gap-2 ${
+                onClick={() => { 
+                  setMode('signup_vendor'); 
+                  setErrorMsg(null); 
+                  setCreatedVendorUser(null);
+                  setCarouselStep(1); 
+                }}
+                className={`flex-1 py-4 text-center transition-all border-b-2 flex items-center justify-center gap-2 cursor-pointer ${
                   mode === 'signup_vendor' 
                     ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10 font-bold' 
                     : 'border-transparent text-slate-400 hover:text-white'
                 }`}
               >
-                <Store className="w-4 h-4" />
-                <span>Créer Compte Vendeur</span>
+                <Briefcase className="w-4 h-4" />
+                <span>Devenir Vendeur</span>
               </button>
             </div>
 
-            {/* Error Message Banner */}
+            {/* Error Message Alert */}
             {errorMsg && (
-              <div className="mx-6 mt-4 p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-200 text-sm flex items-start gap-2.5 animate-fadeIn">
-                <AlertCircle className="w-5 h-5 shrink-0 text-rose-400 mt-0.5" />
-                <span className="font-medium">{errorMsg}</span>
+              <div className="m-5 mb-0 p-4 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-sm flex items-start gap-2.5 animate-fadeIn">
+                <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                <span>{errorMsg}</span>
               </div>
             )}
 
             {/* ========================================================================= */}
-            {/* MODE 1 : CONNEXION UNIVERSELLE */}
+            {/* MODE 1 : CONNEXION UNIVERSELLE (Username / Email + Mot de passe) */}
             {/* ========================================================================= */}
             {mode === 'login' && (
-              <form onSubmit={handleSubmit} className="p-6 sm:p-7 space-y-5 overflow-y-auto">
+              <form onSubmit={handleSubmit} className="p-6 sm:p-8 space-y-6 overflow-y-auto">
                 <div className="space-y-1">
-                  <h3 className="font-['EB_Garamond',serif] text-2xl font-bold text-white">
+                  <h3 className="font-['EB_Garamond',serif] text-2xl sm:text-3xl font-bold text-white">
                     Connexion à votre espace
                   </h3>
-                  <p className="text-sm text-slate-400">
-                    Saisissez vos identifiants. L'application identifie automatiquement votre rôle (Super Admin, Vendeur ou Client).
+                  <p className="text-sm sm:text-base text-slate-400">
+                    Saisissez vos identifiants. L'application identifie automatiquement votre profil selon votre rôle (Super Admin, Vendeur ou Client).
                   </p>
                 </div>
 
                 {/* Login Identifier (Username or Email) */}
-                <div className="space-y-1.5">
-                  <label className="text-sm font-bold text-slate-200 flex items-center justify-between">
-                    <span>Nom d'utilisateur ou Adresse Email</span>
+                <div className="space-y-2">
+                  <label className="text-sm sm:text-base font-bold text-slate-200">
+                    Nom d'utilisateur ou Adresse Email
                   </label>
                   <div className="relative">
-                    <User className="w-5 h-5 text-slate-400 absolute left-3.5 top-3.5" />
+                    <User className="w-5 h-5 text-slate-400 absolute left-4 top-3.5" />
                     <input
                       type="text"
                       required
                       value={loginIdentifier}
                       onChange={(e) => setLoginIdentifier(e.target.value)}
-                      placeholder="superadmin ou votre.email@agence.com"
-                      className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-11 pr-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-blue-500 font-medium"
+                      placeholder="superadmin ou nom_utilisateur ou email@agence.com"
+                      className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-12 pr-4 py-3.5 text-sm sm:text-base text-white focus:outline-none focus:border-blue-500 font-medium"
                     />
                   </div>
                 </div>
 
                 {/* Password */}
-                <div className="space-y-1.5">
-                  <label className="text-sm font-bold text-slate-200">
+                <div className="space-y-2">
+                  <label className="text-sm sm:text-base font-bold text-slate-200">
                     Mot de passe
                   </label>
                   <div className="relative">
-                    <Lock className="w-5 h-5 text-slate-400 absolute left-3.5 top-3.5" />
+                    <Lock className="w-5 h-5 text-slate-400 absolute left-4 top-3.5" />
                     <input
                       type="password"
                       required
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
                       placeholder="••••••••••••"
-                      className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-11 pr-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-blue-500 font-medium"
+                      className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-12 pr-4 py-3.5 text-sm sm:text-base text-white focus:outline-none focus:border-blue-500 font-medium"
                     />
                   </div>
                 </div>
@@ -388,7 +430,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="submit"
                   disabled={isLoading}
-                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-sm sm:text-base transition-all shadow-lg shadow-blue-500/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  className="w-full py-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-base transition-all shadow-lg shadow-blue-500/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                 >
                   {isLoading ? (
                     <span className="animate-pulse">Vérification des accès...</span>
@@ -403,27 +445,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 {/* Superadmin Pre-configured Access Card */}
                 <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/10 via-purple-500/10 to-blue-500/10 border border-amber-500/30 space-y-2">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-xs font-bold text-amber-300 font-mono">
+                    <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-amber-300 font-mono">
                       <Crown className="w-4 h-4 text-amber-400" />
-                      <span>Accès Super Administrateur :</span>
+                      <span>Accès Super Administrateur pré-configuré :</span>
                     </div>
                     <button
                       type="button"
                       onClick={handleFillSuperAdmin}
-                      className="text-xs font-bold text-blue-400 hover:text-white underline cursor-pointer"
+                      className="text-xs sm:text-sm font-bold text-blue-400 hover:text-white underline cursor-pointer"
                     >
                       Remplir automatiquement
                     </button>
                   </div>
-                  <div className="text-xs font-mono text-slate-300 flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <div className="text-xs sm:text-sm font-mono text-slate-300 flex flex-wrap items-center gap-x-4 gap-y-1">
                     <span>Login: <strong className="text-white">superadmin</strong></span>
                     <span>Mot de passe: <strong className="text-white">superadmin</strong></span>
                   </div>
                 </div>
 
                 {/* Client Account Notice */}
-                <div className="text-center pt-2 border-t border-slate-800 text-xs text-slate-400 leading-relaxed">
-                  🛒 <strong>Acheteurs & Clients :</strong> Votre compte client est créé automatiquement lors de la commande dans votre panier pour rattacher vos factures et téléchargements.
+                <div className="text-center pt-2 border-t border-slate-800 text-xs sm:text-sm text-slate-400 leading-relaxed">
+                  🛒 <strong>Acheteurs & Clients :</strong> Votre compte client est créé automatiquement au niveau du panier lors du paiement pour enregistrer vos achats.
                 </div>
               </form>
             )}
@@ -432,23 +474,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {/* MODE 2 : CRÉATION COMPTE VENDEUR EN FORMAT CARROUSEL MULTI-ÉTAPES */}
             {/* ========================================================================= */}
             {mode === 'signup_vendor' && (
-              <div className="p-6 sm:p-7 space-y-5 overflow-y-auto">
+              <div className="p-6 sm:p-8 space-y-6 overflow-y-auto">
                 
                 {/* Carousel Progress Stepper Header */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs font-bold text-slate-400">
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between text-xs sm:text-sm font-bold text-slate-400">
                     <span className="font-mono text-emerald-400">
                       Étape {carouselStep} sur 3
                     </span>
                     <span className="text-slate-300">
                       {carouselStep === 1 && '1. Identifiants & Sécurité'}
-                      {carouselStep === 2 && '2. Identité de l\'Atelier'}
-                      {carouselStep === 3 && '3. Spécialité & Création'}
+                      {carouselStep === 2 && '2. Identité de la Maison'}
+                      {carouselStep === 3 && '3. Spécialité & Contact'}
                     </span>
                   </div>
 
                   {/* Visual Progress Bar */}
-                  <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
+                  <div className="w-full h-2.5 rounded-full bg-slate-800 overflow-hidden flex">
                     <div 
                       className="h-full bg-gradient-to-r from-emerald-500 to-blue-500 transition-all duration-300"
                       style={{ width: `${(carouselStep / 3) * 100}%` }}
@@ -458,89 +500,89 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
                 {/* Step 1: Identifiants & Mot de passe entré 2 fois */}
                 {carouselStep === 1 && (
-                  <div className="space-y-4 animate-fadeIn">
+                  <div className="space-y-5 animate-fadeIn">
                     <div className="space-y-1">
-                      <h3 className="font-['EB_Garamond',serif] text-2xl font-bold text-white">
+                      <h3 className="font-['EB_Garamond',serif] text-2xl sm:text-3xl font-bold text-white">
                         Étape 1 : Identifiants & Sécurité
                       </h3>
-                      <p className="text-sm text-slate-400">
-                        Choisissez votre nom d'utilisateur et sécurisez votre accès vendeur.
+                      <p className="text-sm sm:text-base text-slate-400">
+                        Choisissez votre identifiant unique et sécurisez votre accès avec un mot de passe entré 2 fois.
                       </p>
                     </div>
 
                     {/* Username */}
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-bold text-slate-200">
-                        Nom d'utilisateur (Username) *
+                    <div className="space-y-2">
+                      <label className="text-sm sm:text-base font-bold text-slate-200">
+                        Nom d'utilisateur (Username de connexion) *
                       </label>
                       <div className="relative">
-                        <User className="w-5 h-5 text-slate-400 absolute left-3.5 top-3.5" />
+                        <User className="w-5 h-5 text-slate-400 absolute left-4 top-3.5" />
                         <input
                           type="text"
                           required
                           value={username}
                           onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                          placeholder="ex: alex_martin"
-                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-11 pr-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-mono font-medium"
+                          placeholder="ex: atelier_martin"
+                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-12 pr-4 py-3.5 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-mono font-medium"
                         />
                       </div>
                     </div>
 
                     {/* Email */}
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-bold text-slate-200">
+                    <div className="space-y-2">
+                      <label className="text-sm sm:text-base font-bold text-slate-200">
                         Adresse Email professionnelle *
                       </label>
                       <div className="relative">
-                        <Mail className="w-5 h-5 text-slate-400 absolute left-3.5 top-3.5" />
+                        <Mail className="w-5 h-5 text-slate-400 absolute left-4 top-3.5" />
                         <input
                           type="email"
                           required
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
-                          placeholder="votre.email@atelier.com"
-                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-11 pr-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
+                          placeholder="contact@atelier-martin.com"
+                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-12 pr-4 py-3.5 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
                         />
                       </div>
                     </div>
 
                     {/* Password - Entré une première fois */}
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-bold text-slate-200">
+                    <div className="space-y-2">
+                      <label className="text-sm sm:text-base font-bold text-slate-200">
                         Mot de passe *
                       </label>
                       <div className="relative">
-                        <Lock className="w-5 h-5 text-slate-400 absolute left-3.5 top-3.5" />
+                        <Lock className="w-5 h-5 text-slate-400 absolute left-4 top-3.5" />
                         <input
                           type="password"
                           required
                           value={password}
                           onChange={(e) => setPassword(e.target.value)}
                           placeholder="••••••••••••"
-                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-11 pr-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
+                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-12 pr-4 py-3.5 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
                         />
                       </div>
                     </div>
 
                     {/* Password - Confirmation (Entré DEUX FOIS comme requis) */}
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-bold text-slate-200 flex items-center justify-between">
-                        <span>Confirmez le mot de passe *</span>
+                    <div className="space-y-2">
+                      <label className="text-sm sm:text-base font-bold text-slate-200 flex items-center justify-between">
+                        <span>Confirmez le mot de passe (saisie répétée) *</span>
                         {confirmPassword && password === confirmPassword && (
-                          <span className="text-emerald-400 text-xs font-semibold flex items-center gap-1">
-                            <Check className="w-3.5 h-3.5" /> Identique
+                          <span className="text-emerald-400 text-xs sm:text-sm font-semibold flex items-center gap-1">
+                            <Check className="w-4 h-4" /> Mots de passe identiques
                           </span>
                         )}
                       </label>
                       <div className="relative">
-                        <Lock className="w-5 h-5 text-slate-400 absolute left-3.5 top-3.5" />
+                        <Lock className="w-5 h-5 text-slate-400 absolute left-4 top-3.5" />
                         <input
                           type="password"
                           required
                           value={confirmPassword}
                           onChange={(e) => setConfirmPassword(e.target.value)}
-                          placeholder="Confirmez votre mot de passe"
-                          className={`w-full bg-slate-900 border rounded-2xl pl-11 pr-4 py-3 text-sm sm:text-base text-white focus:outline-none font-medium ${
+                          placeholder="Répétez votre mot de passe"
+                          className={`w-full bg-slate-900 border rounded-2xl pl-12 pr-4 py-3.5 text-sm sm:text-base text-white focus:outline-none font-medium ${
                             confirmPassword && password !== confirmPassword 
                               ? 'border-rose-500 focus:border-rose-500' 
                               : 'border-slate-700/80 focus:border-emerald-500'
@@ -552,70 +594,52 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     <button
                       type="button"
                       onClick={handleNextStep}
-                      className="w-full py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm sm:text-base transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer"
+                      className="w-full py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-base transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer"
                     >
-                      <span>Continuer vers l'Atelier</span>
+                      <span>Continuer vers l'Identité de la Maison</span>
                       <ArrowRight className="w-5 h-5" />
                     </button>
                   </div>
                 )}
 
-                {/* Step 2: Identité & Boutique (Store Name + Slug) */}
+                {/* Step 2: Identité de la Maison / Entreprise (Store Name + Slug + Coordonnées) */}
                 {carouselStep === 2 && (
-                  <div className="space-y-4 animate-fadeIn">
+                  <div className="space-y-5 animate-fadeIn">
                     <div className="space-y-1">
-                      <h3 className="font-['EB_Garamond',serif] text-2xl font-bold text-white">
-                        Étape 2 : Identité de votre Atelier
+                      <h3 className="font-['EB_Garamond',serif] text-2xl sm:text-3xl font-bold text-white">
+                        Étape 2 : Identité de la Maison & Vitrine
                       </h3>
-                      <p className="text-sm text-slate-400">
-                        Votre nom et l'adresse web unique de votre vitrine de vente.
+                      <p className="text-sm sm:text-base text-slate-400">
+                        Renseignez le nom de votre Maison / Studio et ses coordonnées directes. Ces informations seront conservées dans votre espace.
                       </p>
                     </div>
 
-                    {/* Full Name */}
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-bold text-slate-200">
-                        Votre Nom Complet *
+                    {/* Nom de la Maison / Entreprise */}
+                    <div className="space-y-2">
+                      <label className="text-sm sm:text-base font-bold text-slate-200">
+                        Nom de la Maison / Studio / Entreprise *
                       </label>
                       <div className="relative">
-                        <User className="w-5 h-5 text-slate-400 absolute left-3.5 top-3.5" />
-                        <input
-                          type="text"
-                          required
-                          value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          placeholder="Ex: Alexandre Martin"
-                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-11 pr-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Store Name */}
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-bold text-slate-200">
-                        Nom de l'Atelier / Studio BIM *
-                      </label>
-                      <div className="relative">
-                        <Store className="w-5 h-5 text-slate-400 absolute left-3.5 top-3.5" />
+                        <Building2 className="w-5 h-5 text-slate-400 absolute left-4 top-3.5" />
                         <input
                           type="text"
                           required
                           value={storeName}
                           onChange={(e) => handleStoreNameChange(e.target.value)}
-                          placeholder="Ex: StudioArch Atelier"
-                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-11 pr-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
+                          placeholder="Ex: StudioArch BIM, Cabinet Novatech, Atelier Design 3D..."
+                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-12 pr-4 py-3.5 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
                         />
                       </div>
                     </div>
 
                     {/* Unique Storefront URL Slug */}
                     <div className="space-y-2 p-4 rounded-2xl bg-blue-950/40 border border-blue-500/30">
-                      <label className="text-sm font-bold text-blue-300 flex items-center gap-2">
+                      <label className="text-sm sm:text-base font-bold text-blue-300 flex items-center gap-2">
                         <LinkIcon className="w-4 h-4 text-blue-400" />
                         <span>Votre Lien Unique de Vitrine Publique *</span>
                       </label>
                       
-                      <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm sm:text-base font-mono text-slate-300">
+                      <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm sm:text-base font-mono text-slate-300">
                         <span className="text-blue-400 font-bold select-none">vendeur/</span>
                         <input
                           type="text"
@@ -626,9 +650,55 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                           className="bg-transparent text-emerald-400 font-bold focus:outline-none flex-1 font-mono text-sm sm:text-base"
                         />
                       </div>
-                      <p className="text-xs text-slate-400">
-                        URL directe : <span className="font-mono text-blue-300">nexusbim.app/vendeur/{storeSlug || 'votre-nom'}</span>
+                      <p className="text-xs sm:text-sm text-slate-400">
+                        Lien officiel : <span className="font-mono text-blue-300">nexusbim.app/vendeur/{storeSlug || 'votre-nom'}</span>
                       </p>
+                    </div>
+
+                    {/* Téléphone & WhatsApp */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-bold text-slate-200 flex items-center gap-1.5">
+                          <Phone className="w-4 h-4 text-slate-400" />
+                          <span>Téléphone de contact</span>
+                        </label>
+                        <input
+                          type="tel"
+                          value={phone}
+                          onChange={(e) => setPhone(e.target.value)}
+                          placeholder="+33 1 42 68 00 00"
+                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl px-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-sm font-bold text-emerald-400 flex items-center gap-1.5">
+                          <MessageCircle className="w-4 h-4 text-emerald-400" />
+                          <span>WhatsApp Professionnel</span>
+                        </label>
+                        <input
+                          type="tel"
+                          value={whatsapp}
+                          onChange={(e) => setWhatsapp(e.target.value)}
+                          placeholder="+33 6 12 34 56 78"
+                          className="w-full bg-slate-900 border border-emerald-500/40 rounded-2xl px-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Adresse Physique */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-200 flex items-center gap-1.5">
+                        <MapPin className="w-4 h-4 text-blue-400" />
+                        <span>Adresse physique de l'Atelier / Bureau</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={address}
+                        onChange={(e) => setAddress(e.target.value)}
+                        placeholder="Ex: 14 Boulevard Haussmann, 75009 Paris, France"
+                        className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl px-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500"
+                      />
                     </div>
 
                     {/* Buttons: Back / Next */}
@@ -636,7 +706,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <button
                         type="button"
                         onClick={handlePrevStep}
-                        className="px-5 py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold text-sm transition-colors flex items-center gap-2 cursor-pointer"
+                        className="px-6 py-4 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold text-sm sm:text-base transition-colors flex items-center gap-2 cursor-pointer"
                       >
                         <ArrowLeft className="w-4 h-4" />
                         <span>Retour</span>
@@ -645,7 +715,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <button
                         type="button"
                         onClick={handleNextStep}
-                        className="flex-1 py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm sm:text-base transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer"
+                        className="flex-1 py-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-base transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer"
                       >
                         <span>Continuer vers la Spécialité</span>
                         <ArrowRight className="w-5 h-5" />
@@ -654,42 +724,42 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </div>
                 )}
 
-                {/* Step 3: Spécialité (avec option "Autre" + champ de saisie) & Finalisation */}
+                {/* Step 3: Spécialité & Finalisation */}
                 {carouselStep === 3 && (
-                  <form onSubmit={handleSubmit} className="space-y-4 animate-fadeIn">
+                  <form onSubmit={handleSubmit} className="space-y-5 animate-fadeIn">
                     <div className="space-y-1">
-                      <h3 className="font-['EB_Garamond',serif] text-2xl font-bold text-white">
-                        Étape 3 : Spécialité Principale
+                      <h3 className="font-['EB_Garamond',serif] text-2xl sm:text-3xl font-bold text-white">
+                        Étape 3 : Spécialité & Création
                       </h3>
-                      <p className="text-sm text-slate-400">
-                        Indiquez votre domaine d'expertise BIM pour guider les acheteurs.
+                      <p className="text-sm sm:text-base text-slate-400">
+                        Définissez le domaine d'expertise de votre Maison et finalisez la création de votre compte vendeur.
                       </p>
                     </div>
 
-                    {/* Specialty Select */}
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-bold text-slate-200">
-                        Spécialité Principale *
+                    {/* Spécialité principale avec Option Autre */}
+                    <div className="space-y-2">
+                      <label className="text-sm sm:text-base font-bold text-slate-200">
+                        Spécialité Principale de la Maison *
                       </label>
                       <select
                         value={specialty}
                         onChange={(e) => setSpecialty(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl px-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
+                        className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl px-4 py-3.5 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium cursor-pointer"
                       >
-                        <option value="Modélisation Revit & openBIM">Modélisation Revit & openBIM</option>
-                        <option value="Objets 3D, Familles & Design Mobilier">Objets 3D, Familles & Design Mobilier</option>
-                        <option value="Ingénierie Structure & Eurocodes">Ingénierie Structure & Eurocodes</option>
-                        <option value="Automatisation Dynamo, Python & .NET">Automatisation Dynamo, Python & .NET</option>
-                        <option value="Archicad, IFC 4 & Gabarits">Archicad, IFC 4 & Gabarits</option>
-                        <option value="Plans 2D/3D & Détails Constructifs">Plans 2D/3D & Détails Constructifs</option>
-                        <option value="Formations & Logiciels BIM">Formations & Logiciels BIM</option>
-                        <option value="Autre">Autre (préciser ci-dessous)</option>
+                        <option value="Modélisation Revit & openBIM">Modélisation Revit & openBIM (Architecture & Structures)</option>
+                        <option value="Ingénierie des Structures & Eurocodes">Ingénierie des Structures & Notes de Calcul</option>
+                        <option value="Fluides, CVC & MEP">Fluides, CVC & Réseaux MEP</option>
+                        <option value="Design d'Intérieur & Mobilier 3D">Design d'Intérieur, Agencement & Mobilier 3D</option>
+                        <option value="Développement Plugins & Outils BIM">Développement Add-ins Revit, Dynamo & Scripts Python</option>
+                        <option value="Détails d'Exécution & Normes BTP">Carnets de Détails d'Exécution PDF & DWG</option>
+                        <option value="Formations Vidéo & Masterclass BIM">Formations Vidéo & Accompagnement Professionnel</option>
+                        <option value="Autre">Autre (Saisir votre propre spécialité personnalisée)</option>
                       </select>
                     </div>
 
-                    {/* Custom Specialty Field if "Autre" is selected */}
+                    {/* Si Autre est sélectionné : champ texte pour entrer l'information */}
                     {specialty === 'Autre' && (
-                      <div className="space-y-1.5 p-4 rounded-2xl bg-slate-950 border border-emerald-500/40 animate-fadeIn">
+                      <div className="space-y-2 p-4 rounded-2xl bg-emerald-950/30 border border-emerald-500/40 animate-fadeIn">
                         <label className="text-sm font-bold text-emerald-300">
                           Précisez votre spécialité personnalisée *
                         </label>
@@ -698,39 +768,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                           required
                           value={customSpecialty}
                           onChange={(e) => setCustomSpecialty(e.target.value)}
-                          placeholder="Ex : Coordination Fluides MEP, Scans 3D..."
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
+                          placeholder="Ex: Scanner 3D & Nuages de points vers BIM, Rénovation énergétique..."
+                          className="w-full bg-slate-900 border border-emerald-500/60 rounded-xl px-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-400 font-medium"
                         />
                       </div>
                     )}
 
-                    {/* Optional Phone / WhatsApp contact at signup */}
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-bold text-slate-200">
-                        Téléphone / WhatsApp professionnel (Optionnel)
+                    {/* Description / Slogan */}
+                    <div className="space-y-2">
+                      <label className="text-sm sm:text-base font-bold text-slate-200">
+                        Présentation courte / Slogan de la Maison
                       </label>
-                      <div className="relative">
-                        <Phone className="w-5 h-5 text-slate-400 absolute left-3.5 top-3.5" />
-                        <input
-                          type="tel"
-                          value={phone}
-                          onChange={(e) => setPhone(e.target.value)}
-                          placeholder="+33 6 12 34 56 78"
-                          className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl pl-11 pr-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
-                        />
+                      <textarea
+                        rows={2}
+                        value={bio}
+                        onChange={(e) => setBio(e.target.value)}
+                        placeholder="Ex: Bureau d'études spécialisé dans la production de maquettes d'exécution et familles paramétriques certifiées."
+                        className="w-full bg-slate-900 border border-slate-700/80 rounded-2xl px-4 py-3 text-sm sm:text-base text-white focus:outline-none focus:border-emerald-500 font-medium"
+                      />
+                    </div>
+
+                    {/* Summary Card */}
+                    <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2 text-xs sm:text-sm text-slate-300">
+                      <div className="font-bold text-white flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-emerald-400" />
+                        <span>Récapitulatif de votre Maison :</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                        <div>Maison : <span className="text-white font-bold">{storeName || 'Non défini'}</span></div>
+                        <div>Lien : <span className="text-emerald-400 font-bold">/{storeSlug || 'slug'}</span></div>
+                        <div>Username : <span className="text-white">{username}</span></div>
+                        <div>Email : <span className="text-white">{email}</span></div>
                       </div>
                     </div>
 
-                    <div className="p-3.5 rounded-2xl bg-slate-900/80 border border-slate-800 text-xs text-slate-400 leading-relaxed">
-                      ℹ️ Après inscription, vous pourrez compléter à tout moment vos informations (logo de l'atelier, adresse physique du studio, téléphone WhatsApp, email direct) depuis votre espace vendeur.
-                    </div>
-
-                    {/* Submit & Back buttons */}
+                    {/* Navigation Buttons */}
                     <div className="flex items-center gap-3 pt-2">
                       <button
                         type="button"
                         onClick={handlePrevStep}
-                        className="px-5 py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold text-sm transition-colors flex items-center gap-2 cursor-pointer"
+                        className="px-6 py-4 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold text-sm sm:text-base transition-colors flex items-center gap-2 cursor-pointer"
                       >
                         <ArrowLeft className="w-4 h-4" />
                         <span>Retour</span>
@@ -739,19 +816,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       <button
                         type="submit"
                         disabled={isLoading}
-                        className="flex-1 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-blue-600 hover:brightness-105 text-white font-bold text-sm sm:text-base transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                        className="flex-1 py-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-base transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                       >
                         {isLoading ? (
-                          <span className="animate-pulse">Création de votre atelier en cours...</span>
+                          <span className="animate-pulse">Enregistrement de la Maison...</span>
                         ) : (
                           <>
-                            <span>Créer mon Compte Vendeur</span>
-                            <Check className="w-5 h-5" />
+                            <span>Créer ma Maison & Obtenir mon Lien</span>
+                            <Check className="w-5 h-5 text-white" />
                           </>
                         )}
                       </button>
                     </div>
-
                   </form>
                 )}
 

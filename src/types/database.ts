@@ -54,6 +54,7 @@ export interface UserProfile {
   whatsapp?: string;
   address?: string;
   contact_email?: string;
+  banner_url?: string;
   is_super_admin?: boolean;
   status: 'active' | 'suspended' | 'pending';
   created_at: string;
@@ -114,6 +115,7 @@ export interface Order {
   total_amount: number;       // En USD ($)
   tax_amount: number;         // En USD ($)
   status: 'completed' | 'pending' | 'refunded';
+  payment_method?: string;
   created_at: string;
   items: OrderItem[];
 }

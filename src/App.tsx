@@ -242,6 +242,7 @@ export default function App() {
   const handleSignOut = async () => {
     await supabaseAuthService.signOut();
     setCurrentUser(null);
+    setCurrentView('landing');
   };
 
   // Cart Handlers
@@ -312,14 +313,12 @@ export default function App() {
   };
 
   const handleDeleteProduct = async (productId: string) => {
-    if (confirm('Voulez-vous vraiment supprimer ce produit de la vente ?')) {
-      if (appMode === 'real') {
-        try {
-          await supabaseDatabaseService.deleteProduct(productId);
-        } catch (err) {}
-      }
-      setProducts(prev => prev.filter(p => p.id !== productId));
+    if (appMode === 'real') {
+      try {
+        await supabaseDatabaseService.deleteProduct(productId);
+      } catch (err) {}
     }
+    setProducts(prev => prev.filter(p => p.id !== productId));
   };
 
   return (

@@ -292,6 +292,25 @@ export const supabaseAuthService = {
       const updated = [vendorProfile, ...existingProfiles.filter(p => p.email !== vendorProfile.email && p.username !== vendorProfile.username)];
       setLocalRealData('profiles', updated);
 
+      // Sauvegarder automatiquement les paramètres de la boutique pour ne pas les re-demander
+      const initialStoreSettings = {
+        vendor_id: vendorProfile.id,
+        store_name: vendorProfile.company || params.storeName || params.name,
+        tagline: `Atelier certifié ${vendorProfile.specialty}`,
+        bio: vendorProfile.bio || `Boutique officielle ${params.storeName}. Fichiers et modèles certifiés.`,
+        banner_url: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200',
+        logo_url: vendorProfile.avatar,
+        primary_color: '#2563eb',
+        phone: vendorProfile.phone,
+        whatsapp: vendorProfile.whatsapp,
+        address: vendorProfile.address,
+        contact_email: vendorProfile.contact_email
+      };
+      setLocalRealData(`store_settings_${vendorProfile.id}`, initialStoreSettings);
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('nexus_store_settings', JSON.stringify(initialStoreSettings));
+      }
+
       this.setCurrentUser(vendorProfile);
       return { user: vendorProfile, error: null };
     } catch (err: any) {
@@ -622,7 +641,39 @@ export const supabaseDatabaseService = {
         .order('created_at', { ascending: false });
 
       if (!error && data && data.length > 0) {
-        return data as Order[];
+        // Normaliser les articles commandés pour l'interface
+        return data.map((o: any) => ({
+          ...o,
+          items: (o.order_items || []).map((it: any) => ({
+            id: it.id,
+            product_id: it.product_id,
+            price: Number(it.price || 0),
+            download_url: it.download_url,
+            license_key: it.license_key,
+            product: {
+              id: it.product_id,
+              title: it.product_title || 'Produit BIM Certifié',
+              price: Number(it.price || 0),
+              vendor_name: it.vendor_name || 'Atelier Partenaire',
+              vendor_id: it.vendor_id || '',
+              vendor_slug: it.vendor_slug || '',
+              download_url: it.download_url,
+              sample_activation_key: it.license_key,
+              category: 'Maquettes BIM',
+              software: 'Revit / IFC',
+              product_type: 'model',
+              description: 'Élément certifié',
+              image_url: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=600',
+              file_format: '.rvt / .ifc',
+              file_size: '24 Mo',
+              rating: 5,
+              reviews_count: 0,
+              sales_count: 1,
+              status: 'published',
+              created_at: o.created_at
+            }
+          }))
+        })) as Order[];
       }
     } catch (e) {}
     return getLocalRealData<Order[]>('orders', []);
@@ -644,8 +695,12 @@ export const supabaseDatabaseService = {
           customer_name: newOrder.customer_name,
           customer_email: newOrder.customer_email,
           total_amount: newOrder.total_amount,
-          tax_amount: newOrder.tax_amount,
-          status: newOrder.status,
+          tax_amount: newOrder.tax_amount || 0,
+          platform_fee_percent: 15.00,
+          platform_commission: Number((newOrder.total_amount * 0.15).toFixed(2)),
+          vendor_net_amount: Number((newOrder.total_amount * 0.85).toFixed(2)),
+          payment_method: 'Stripe (Carte Bancaire)',
+          status: newOrder.status || 'completed',
           created_at: newOrder.created_at
         }
       ]);
@@ -653,14 +708,17 @@ export const supabaseDatabaseService = {
       if (newOrder.items && newOrder.items.length > 0) {
         await client.from('order_items').insert(
           newOrder.items.map(item => ({
-            id: item.id || `item_${Date.now()}`,
+            id: item.id || `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
             order_id: newOrder.id,
             product_id: item.product_id,
-            product_title: item.product.title,
+            vendor_id: item.product?.vendor_id || null,
+            vendor_name: item.product?.vendor_name || 'Vendeur',
+            vendor_slug: item.product?.vendor_slug || '',
+            product_title: item.product?.title || 'Fichier BIM',
             price: item.price,
-            vendor_name: item.product.vendor_name,
-            license_key: item.license_key || item.product.sample_activation_key,
-            download_url: item.download_url || item.product.download_url
+            download_url: item.download_url || item.product?.download_url,
+            license_key: item.license_key || item.product?.sample_activation_key,
+            created_at: new Date().toISOString()
           }))
         );
       }
@@ -682,7 +740,13 @@ export const supabaseDatabaseService = {
         .order('created_at', { ascending: false });
 
       if (!error && data && data.length > 0) {
-        return data;
+        return data.map((p: any) => ({
+          ...p,
+          amount: p.payout_amount || p.amount,
+          gross_revenue: p.gross_revenue || p.requested_amount || p.amount,
+          platform_fee: p.platform_fee || p.platform_fee_amount || 0,
+          payout_amount: p.payout_amount || p.net_payout_amount || p.amount
+        }));
       }
     } catch (e) {}
     return getLocalRealData<any[]>('payouts', []);
@@ -701,7 +765,14 @@ export const supabaseDatabaseService = {
     const client = getSupabaseClient();
     const newPayout = {
       id: `PAY-${Date.now().toString().slice(-4)}`,
-      ...payout,
+      vendor_id: payout.vendor_id,
+      vendor_name: payout.vendor_name,
+      gross_revenue: payout.gross_revenue,
+      payout_amount: payout.payout_amount,
+      fee_percent: payout.fee_percent || 15.00,
+      platform_fee: payout.platform_fee,
+      method: payout.method,
+      account_info: payout.account_info,
       status: 'pending',
       requested_at: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }),
       created_at: new Date().toISOString(),
@@ -709,21 +780,7 @@ export const supabaseDatabaseService = {
     };
 
     try {
-      await client.from('payout_requests').insert([
-        {
-          id: newPayout.id,
-          vendor_id: newPayout.vendor_id,
-          vendor_name: newPayout.vendor_name,
-          requested_amount: newPayout.gross_revenue,
-          platform_fee_percent: newPayout.fee_percent,
-          platform_fee_amount: newPayout.platform_fee,
-          net_payout_amount: newPayout.payout_amount,
-          payout_method: newPayout.method,
-          account_details: newPayout.account_info,
-          status: newPayout.status,
-          created_at: newPayout.created_at
-        }
-      ]);
+      await client.from('payout_requests').insert([newPayout]);
     } catch (e) {}
 
     const localPayouts = getLocalRealData<any[]>('payouts', []);
@@ -755,7 +812,201 @@ export const supabaseDatabaseService = {
         return data as UserProfile[];
       }
     } catch (e) {}
-    return getLocalRealData<UserProfile[]>('profiles', []);
+    return getLocalRealData<UserProfile[]>('profiles', [DEFAULT_SUPER_ADMIN]);
+  }
+};
+
+export interface TableStatusInfo {
+  tableName: string;
+  label: string;
+  exists: boolean;
+  rowCount: number;
+  statusText: string;
+}
+
+/**
+ * VÉRIFICATION DE L'ÉTAT RÉEL DES TABLES DANS SUPABASE
+ */
+export const checkSupabaseTablesStatus = async (): Promise<TableStatusInfo[]> => {
+  const client = getSupabaseClient();
+  const tables = [
+    { name: 'profiles', label: 'Profils Utilisateurs & Vendeurs' },
+    { name: 'products', label: 'Catalogue Produits Numériques' },
+    { name: 'orders', label: 'Commandes Acheteurs (USD)' },
+    { name: 'order_items', label: 'Lignes de Commandes & Articles' },
+    { name: 'payout_requests', label: 'Demandes de Retraits Vendeurs' },
+    { name: 'vendor_stores', label: 'Boutiques & Paramètres Ateliers' },
+  ];
+
+  const results: TableStatusInfo[] = [];
+
+  for (const t of tables) {
+    try {
+      const { count, error } = await client
+        .from(t.name)
+        .select('*', { count: 'exact', head: true });
+
+      if (error) {
+        if (error.code === 'PGRST205' || error.message?.includes('schema cache') || error.message?.includes('Could not find')) {
+          results.push({
+            tableName: t.name,
+            label: t.label,
+            exists: false,
+            rowCount: 0,
+            statusText: 'Non créée dans Supabase (Exécuter le script SQL)'
+          });
+        } else {
+          results.push({
+            tableName: t.name,
+            label: t.label,
+            exists: true,
+            rowCount: count || 0,
+            statusText: `Connectée (${count || 0} lignes)`
+          });
+        }
+      } else {
+        results.push({
+          tableName: t.name,
+          label: t.label,
+          exists: true,
+          rowCount: count || 0,
+          statusText: `Active & Prête (${count || 0} lignes)`
+        });
+      }
+    } catch (err: any) {
+      results.push({
+        tableName: t.name,
+        label: t.label,
+        exists: false,
+        rowCount: 0,
+        statusText: 'Erreur réseau ou table absente'
+      });
+    }
+  }
+
+  return results;
+};
+
+/**
+ * SYNCHRONISATION DES DONNÉES LOCALES VERS SUPABASE
+ */
+export const syncLocalDataToSupabase = async (): Promise<{ success: boolean; message: string; count: number }> => {
+  const client = getSupabaseClient();
+  let migratedCount = 0;
+
+  try {
+    // 1. Migrer les profils
+    const profiles = getLocalRealData<UserProfile[]>('profiles', [DEFAULT_SUPER_ADMIN]);
+    if (profiles.length > 0) {
+      const { error: pErr } = await client.from('profiles').upsert(
+        profiles.map(p => ({
+          id: p.id,
+          username: p.username,
+          email: p.email,
+          name: p.name,
+          role: p.role,
+          company: p.company,
+          specialty: p.specialty,
+          bio: p.bio,
+          store_slug: p.store_slug,
+          phone: p.phone,
+          whatsapp: p.whatsapp,
+          address: p.address,
+          contact_email: p.contact_email,
+          banner_url: p.banner_url,
+          avatar: p.avatar,
+          is_super_admin: p.is_super_admin || false,
+          status: p.status || 'active'
+        }))
+      );
+      if (!pErr) migratedCount += profiles.length;
+    }
+
+    // 2. Migrer les produits
+    const products = getLocalRealData<Product[]>('products', []);
+    if (products.length > 0) {
+      const { error: prErr } = await client.from('products').upsert(
+        products.map(pr => ({
+          id: pr.id,
+          vendor_id: pr.vendor_id || 'usr_super_admin',
+          vendor_name: pr.vendor_name,
+          vendor_slug: pr.vendor_slug || '',
+          title: pr.title,
+          description: pr.description,
+          price: pr.price,
+          category: pr.category,
+          software: pr.software,
+          product_type: pr.product_type,
+          image_url: pr.image_url,
+          file_format: pr.file_format,
+          file_size: pr.file_size,
+          status: pr.status || 'published',
+          download_url: pr.download_url,
+          sample_activation_key: pr.sample_activation_key
+        }))
+      );
+      if (!prErr) migratedCount += products.length;
+    }
+
+    // 3. Migrer les commandes
+    const orders = getLocalRealData<Order[]>('orders', []);
+    if (orders.length > 0) {
+      for (const ord of orders) {
+        await client.from('orders').upsert({
+          id: ord.id,
+          customer_id: ord.customer_id,
+          customer_name: ord.customer_name,
+          customer_email: ord.customer_email,
+          total_amount: ord.total_amount,
+          tax_amount: ord.tax_amount || 0,
+          status: ord.status || 'completed'
+        });
+        if (ord.items && ord.items.length > 0) {
+          await client.from('order_items').upsert(
+            ord.items.map(it => ({
+              id: it.id,
+              order_id: ord.id,
+              product_id: it.product_id,
+              product_title: it.product?.title || 'Fichier BIM',
+              price: it.price
+            }))
+          );
+        }
+      }
+      migratedCount += orders.length;
+    }
+
+    // 4. Migrer les retraits
+    const payouts = getLocalRealData<any[]>('payouts', []);
+    if (payouts.length > 0) {
+      await client.from('payout_requests').upsert(
+        payouts.map(pay => ({
+          id: pay.id,
+          vendor_id: pay.vendor_id,
+          vendor_name: pay.vendor_name,
+          gross_revenue: pay.gross_revenue,
+          payout_amount: pay.payout_amount,
+          fee_percent: pay.fee_percent || 15,
+          platform_fee: pay.platform_fee,
+          method: pay.method,
+          account_info: pay.account_info,
+          status: pay.status || 'pending'
+        }))
+      );
+      migratedCount += payouts.length;
+    }
+
+    return {
+      success: true,
+      message: `Synchronisation réussie ! ${migratedCount} éléments transférés vers Supabase.`,
+      count: migratedCount
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `Erreur de synchronisation : ${err.message || 'Impossible d\'écrire dans Supabase.'}`,
+      count: migratedCount
+    };
   }
 };
 
@@ -763,23 +1014,24 @@ export const supabaseDatabaseService = {
  * GÉNÈRE LE SCRIPT SQL COMPLET AVEC LA GESTION DES RÔLES ET DU STORE_SLUG
  */
 export const generateSupabaseSQLSchema = (): string => {
-  return `-- ============================================================================
--- SCRIPT SQL D'INITIALISATION COMPLET - NEXUS BIM MARKETPLACE
--- Projet ID : lfndoimqzxvqsosxgeys
--- À coller directement dans le SQL Editor de Supabase (https://supabase.com/dashboard)
--- ============================================================================
+  return `-- =============================================================================
+-- NEXUS BIM MARKETPLACE - SCRIPT OFFICIEL DE MIGRATION SUPABASE
+-- Projet ID: lfndoimqzxvqsosxgeys
+-- URL: https://lfndoimqzxvqsosxgeys.supabase.co
+-- À exécuter dans : https://supabase.com/dashboard/project/lfndoimqzxvqsosxgeys/sql/new
+-- =============================================================================
 
--- 1. EXTENSIONS REQUISES
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- 2. TABLE DES PROFILS UTILISATEURS (MULTI-VENDEURS & CLIENTS)
+-- 1. TABLE DES PROFILS UTILISATEURS (MULTI-VENDEURS, CLIENTS, SUPERADMINS)
 CREATE TABLE IF NOT EXISTS public.profiles (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id TEXT PRIMARY KEY,
   username TEXT UNIQUE,
   email TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
-  role TEXT CHECK (role IN ('super_admin', 'admin', 'vendor', 'customer')) DEFAULT 'customer',
-  avatar TEXT,
+  role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'vendor', 'customer')) DEFAULT 'customer',
+  avatar TEXT DEFAULT 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
   company TEXT,
   specialty TEXT,
   bio TEXT,
@@ -788,106 +1040,167 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   whatsapp TEXT,
   address TEXT,
   contact_email TEXT,
+  banner_url TEXT DEFAULT 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200',
   is_super_admin BOOLEAN DEFAULT FALSE,
-  status TEXT CHECK (status IN ('active', 'suspended', 'pending')) DEFAULT 'active',
+  status TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'pending')) DEFAULT 'active',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. TABLE DES PRODUITS NUMÉRIQUES
+-- 2. TABLE DES BOUTIQUES VENDEURS (PARAMÈTRES ATELIER & COORDONNÉES)
+CREATE TABLE IF NOT EXISTS public.vendor_stores (
+  vendor_id TEXT PRIMARY KEY,
+  store_name TEXT NOT NULL,
+  tagline TEXT,
+  bio TEXT,
+  banner_url TEXT,
+  logo_url TEXT,
+  primary_color TEXT DEFAULT '#2563eb',
+  phone TEXT,
+  whatsapp TEXT,
+  address TEXT,
+  contact_email TEXT,
+  website_url TEXT,
+  linkedin_url TEXT,
+  followers_count INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. TABLE DES PRODUITS NUMÉRIQUES (MAQUETTES BIM, OBJETS 3D, PLUGINS, ETC.)
 CREATE TABLE IF NOT EXISTS public.products (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  vendor_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+  id TEXT PRIMARY KEY,
+  vendor_id TEXT NOT NULL,
   vendor_name TEXT NOT NULL,
   vendor_slug TEXT,
   vendor_avatar TEXT,
+  vendor_rating NUMERIC(3,2) DEFAULT 5.0,
   title TEXT NOT NULL,
-  description TEXT,
+  description TEXT NOT NULL,
   detailed_description TEXT,
-  price NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+  price NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  is_free BOOLEAN DEFAULT FALSE,
   category TEXT NOT NULL,
   software TEXT NOT NULL,
   product_type TEXT NOT NULL,
-  image_url TEXT,
-  file_format TEXT,
-  file_size TEXT,
+  image_url TEXT NOT NULL,
+  gallery TEXT[] DEFAULT '{}',
+  file_format TEXT NOT NULL,
+  file_size TEXT NOT NULL,
+  version_compatibility TEXT,
+  license_type TEXT DEFAULT 'Usage professionnel',
+  status TEXT NOT NULL CHECK (status IN ('published', 'draft', 'pending')) DEFAULT 'published',
+  sales_count INTEGER DEFAULT 0,
+  rating NUMERIC(3,2) DEFAULT 5.0,
+  reviews_count INTEGER DEFAULT 0,
   download_url TEXT,
+  external_link TEXT,
   sample_activation_key TEXT,
-  activation_key TEXT,
-  rating NUMERIC(3, 2) DEFAULT 5.0,
-  reviews_count INT DEFAULT 0,
-  sales_count INT DEFAULT 0,
-  status TEXT CHECK (status IN ('draft', 'published', 'archived')) DEFAULT 'published',
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  tags TEXT[] DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 4. TABLE DES COMMANDES ACHETEURS (MONNAIE: USD)
+-- 4. TABLE DES COMMANDES CLIENTS (ACHATS MULTI-VENDEURS EN USD)
 CREATE TABLE IF NOT EXISTS public.orders (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  customer_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  id TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL,
   customer_name TEXT NOT NULL,
   customer_email TEXT NOT NULL,
-  total_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-  tax_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-  platform_fee_percent NUMERIC(4, 2) NOT NULL DEFAULT 15.00,
-  platform_commission NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-  vendor_net_amount NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-  payment_method TEXT DEFAULT 'credit_card',
-  status TEXT CHECK (status IN ('pending', 'completed', 'refunded')) DEFAULT 'completed',
+  total_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  tax_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  platform_fee_percent NUMERIC(5,2) DEFAULT 15.00,
+  platform_commission NUMERIC(10,2) DEFAULT 0.00,
+  vendor_net_amount NUMERIC(10,2) DEFAULT 0.00,
+  payment_method TEXT DEFAULT 'Stripe (Carte Bancaire)',
+  status TEXT NOT NULL CHECK (status IN ('completed', 'pending', 'refunded')) DEFAULT 'completed',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 5. TABLE DES LIGNES D'ARTICLES COMMANDÉS (AVEC ISOLATION MULTI-VENDEURS)
+-- 5. TABLE DES LIGNES DE COMMANDES (AVEC ISOLATION VENDEUR)
 CREATE TABLE IF NOT EXISTS public.order_items (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  order_id UUID REFERENCES public.orders(id) ON DELETE CASCADE,
-  product_id UUID REFERENCES public.products(id) ON DELETE SET NULL,
-  vendor_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
-  vendor_name TEXT NOT NULL,
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
+  product_id TEXT NOT NULL,
+  vendor_id TEXT,
+  vendor_name TEXT,
   vendor_slug TEXT,
   product_title TEXT NOT NULL,
-  price NUMERIC(10, 2) NOT NULL,
+  price NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  download_url TEXT,
   license_key TEXT,
-  download_url TEXT
+  created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 6. TABLE DES DEMANDES DE RETRAIT DES VENDEURS (PAYOUTS)
+-- 6. TABLE DES DEMANDES DE RETRAIT & PAIEMENTS VENDEURS (PAYOUTS)
 CREATE TABLE IF NOT EXISTS public.payout_requests (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  vendor_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+  id TEXT PRIMARY KEY,
+  vendor_id TEXT NOT NULL,
   vendor_name TEXT NOT NULL,
-  requested_amount NUMERIC(10, 2) NOT NULL,
-  platform_fee_percent NUMERIC(4, 2) DEFAULT 15.00,
-  platform_fee_amount NUMERIC(10, 2) NOT NULL,
-  net_payout_amount NUMERIC(10, 2) NOT NULL,
-  payout_method TEXT NOT NULL,
-  account_details TEXT NOT NULL,
-  status TEXT CHECK (status IN ('pending', 'processing', 'completed', 'rejected')) DEFAULT 'pending',
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  processed_at TIMESTAMPTZ
+  gross_revenue NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  payout_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  fee_percent NUMERIC(5,2) NOT NULL DEFAULT 15.00,
+  platform_fee NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  method TEXT NOT NULL,
+  account_info TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('completed', 'pending', 'processing', 'rejected')) DEFAULT 'pending',
+  requested_at TIMESTAMPTZ DEFAULT NOW(),
+  processed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 7. ACTIVATION DU ROW LEVEL SECURITY (RLS)
+-- 7. TABLE DES AVIS & ÉVALUATIONS CLIENTS
+CREATE TABLE IF NOT EXISTS public.reviews (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  author_avatar TEXT,
+  rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+  comment TEXT,
+  date TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 8. COMPTE SUPER ADMINISTRATEUR PAR DÉFAUT
+INSERT INTO public.profiles (
+  id, username, email, name, role, company, specialty, is_super_admin, status
+) VALUES (
+  'usr_super_admin', 'superadmin', 'superadmin@nexusbim.com', 'Super Administrateur', 'super_admin', 'Nexus BIM Core', 'Direction Plateforme & Sécurité', TRUE, 'active'
+) ON CONFLICT (email) DO UPDATE SET
+  username = 'superadmin',
+  role = 'super_admin',
+  is_super_admin = TRUE,
+  status = 'active';
+
+-- 9. ACTIVATION DU ROW LEVEL SECURITY (RLS)
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vendor_stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payout_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reviews ENABLE ROW LEVEL SECURITY;
 
--- 8. POLITIQUES DE LECTURE PUBLIQUE
-CREATE POLICY "Catalogue public en lecture" ON public.products
-  FOR SELECT USING (true);
+-- 10. POLITIQUES D'ACCÈS PERMISSIVES POUR APPLICATION CLIENT (ANON / PUBLIC)
+DROP POLICY IF EXISTS "Public Full Access Profiles" ON public.profiles;
+CREATE POLICY "Public Full Access Profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
 
-CREATE POLICY "Profils publics en lecture" ON public.profiles
-  FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Public Full Access Vendor Stores" ON public.vendor_stores;
+CREATE POLICY "Public Full Access Vendor Stores" ON public.vendor_stores FOR ALL USING (true) WITH CHECK (true);
 
--- 9. CRÉATION DU SUPER ADMINISTRATEUR PAR DÉFAUT (login: superadmin / superadmin)
-INSERT INTO public.profiles (email, name, role, is_super_admin, company, specialty, username)
-VALUES ('superadmin@nexusbim.com', 'Super Administrateur', 'super_admin', TRUE, 'Nexus BIM Core', 'Direction & Sécurité Plateforme', 'superadmin')
-ON CONFLICT (email) DO UPDATE SET 
-  username = 'superadmin',
-  role = 'super_admin', 
-  is_super_admin = TRUE;
+DROP POLICY IF EXISTS "Public Full Access Products" ON public.products;
+CREATE POLICY "Public Full Access Products" ON public.products FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Full Access Orders" ON public.orders;
+CREATE POLICY "Public Full Access Orders" ON public.orders FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Full Access Order Items" ON public.order_items;
+CREATE POLICY "Public Full Access Order Items" ON public.order_items FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Full Access Payout Requests" ON public.payout_requests;
+CREATE POLICY "Public Full Access Payout Requests" ON public.payout_requests FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Public Full Access Reviews" ON public.reviews;
+CREATE POLICY "Public Full Access Reviews" ON public.reviews FOR ALL USING (true) WITH CHECK (true);
 `;
 };
 

@@ -49,11 +49,16 @@ import {
   Mail,
   Phone,
   MapPin,
-  MessageCircle
+  MessageCircle,
+  Printer,
+  Edit3,
+  Upload,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Product, VendorStoreSettings, PayoutTransaction, ProductType, UserProfile, Order } from '../../types/database';
 import { INITIAL_PAYOUTS } from '../../data/mockData';
 import { AddProductModal } from './AddProductModal';
+import { PrintInvoiceModal } from './PrintInvoiceModal';
 import { NexusLogo } from '../common/NexusLogo';
 import { exportToCSV, supabaseDatabaseService, supabaseAuthService } from '../../services/supabase';
 
@@ -88,15 +93,60 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
   onViewVendorStore,
   onUserAuthenticated,
 }) => {
-  const [activeMenu, setActiveMenu] = useState<'dashboard' | 'products' | 'revenue' | 'store' | 'orders' | 'clients' | 'stats' | 'reviews'>('dashboard');
+  const [activeMenu, setActiveMenu] = useState<'dashboard' | 'products' | 'revenue' | 'store' | 'sales' | 'clients' | 'stats' | 'reviews'>('dashboard');
   const [productTab, setProductTab] = useState<'all' | 'published' | 'draft' | 'pending'>('all');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [productSearch, setProductSearch] = useState('');
   const [isWithdrawModalOpen, setIsWithdrawModalOpen] = useState(false);
   const [savedSettingsFeedback, setSavedSettingsFeedback] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState(false);
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+
+  // Print Modal State
+  const [printModalConfig, setPrintModalConfig] = useState<{
+    isOpen: boolean;
+    type: 'sale' | 'all_sales' | 'payout' | 'stats';
+    order?: Order | null;
+    orders?: Order[];
+    payout?: PayoutTransaction | null;
+    statsData?: {
+      grossSales: number;
+      netEarnings: number;
+      orderCount: number;
+      avgOrder: number;
+      productsCount: number;
+    };
+  }>({ isOpen: false, type: 'sale' });
+
+  // Refs for vendor store logo & banner file uploads
+  const logoInputRef = React.useRef<HTMLInputElement>(null);
+  const bannerInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      if (typeof event.target?.result === 'string') {
+        setLogoUrl(event.target.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleBannerUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      if (typeof event.target?.result === 'string') {
+        setBannerUrl(event.target.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   // Active vendor info
   const currentVendorSlug = currentUser?.store_slug || 'studioarch-atelier';
@@ -134,28 +184,61 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
   const displayPlatformCut = displayTotalSales * 0.15;
   const displayOrderCount = appMode === 'real' ? vendorOrders.length : 48;
 
-  // Withdrawal form state (GUI stub as requested)
-  const [withdrawAmount, setWithdrawAmount] = useState(() => 
-    appMode === 'real' ? (displayNetEarnings > 0 ? displayNetEarnings.toFixed(2) : '0.00') : '1245.80'
-  );
-  const [withdrawMethod, setWithdrawMethod] = useState<'Virement bancaire (SEPA/SWIFT)' | 'Stripe' | 'PayPal' | 'Wise'>('Virement bancaire (SEPA/SWIFT)');
-  const [accountDetails, setAccountDetails] = useState('US89 3000 4000 0001 2345 6789 012');
+  // Payouts & Available Balance Calculation
   const [payouts, setPayouts] = useState<PayoutTransaction[]>(() => 
     appMode === 'real' ? [] : INITIAL_PAYOUTS
   );
+  
+  // Solde disponible réel : Revenus nets réels - retraits déjà initiés
+  const totalPaidOut = payouts.reduce((sum, p) => sum + p.amount, 0);
+  const availableBalance = Math.max(0, displayNetEarnings - totalPaidOut);
+
+  // Withdrawal form state
+  const [withdrawAmount, setWithdrawAmount] = useState(() => 
+    appMode === 'real' ? (availableBalance > 0 ? availableBalance.toFixed(2) : '0.00') : '1245.80'
+  );
+  const [withdrawMethod, setWithdrawMethod] = useState<'Virement bancaire (SEPA/SWIFT)' | 'Stripe' | 'PayPal' | 'Wise'>('Virement bancaire (SEPA/SWIFT)');
+  const [accountDetails, setAccountDetails] = useState('US89 3000 4000 0001 2345 6789 012');
   const [payoutSuccessMsg, setPayoutSuccessMsg] = useState(false);
 
   // Store customization & additional vendor contact form state
-  const [storeName, setStoreName] = useState(currentUser?.company || storeSettings.store_name);
-  const [tagline, setTagline] = useState(storeSettings.tagline);
-  const [bio, setBio] = useState(currentUser?.bio || storeSettings.bio);
+  const [storeName, setStoreName] = useState(currentUser?.company || currentUser?.name || storeSettings.store_name);
+  const [tagline, setTagline] = useState(storeSettings.tagline || (currentUser?.specialty ? `Atelier spécialisé en ${currentUser.specialty}` : ''));
+  const [bio, setBio] = useState(currentUser?.bio || storeSettings.bio || '');
   const [logoUrl, setLogoUrl] = useState(currentUser?.avatar || storeSettings.logo_url);
-  const [bannerUrl, setBannerUrl] = useState(storeSettings.banner_url || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200');
+  const [bannerUrl, setBannerUrl] = useState(currentUser?.banner_url || storeSettings.banner_url || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200');
   const [address, setAddress] = useState(currentUser?.address || storeSettings.address || '');
   const [phone, setPhone] = useState(currentUser?.phone || storeSettings.phone || '');
   const [whatsapp, setWhatsapp] = useState(currentUser?.whatsapp || storeSettings.whatsapp || '');
   const [contactEmail, setContactEmail] = useState(currentUser?.contact_email || storeSettings.contact_email || currentUser?.email || '');
   const [primaryColor, setPrimaryColor] = useState(storeSettings.primary_color || '#2563eb');
+
+  // Sync store settings whenever currentUser changes (perserve information entered in carousel)
+  React.useEffect(() => {
+    if (currentUser) {
+      setStoreName(currentUser.company || currentUser.name || storeSettings.store_name || '');
+      setTagline(storeSettings.tagline || (currentUser.specialty ? `Atelier certifié ${currentUser.specialty}` : ''));
+      setBio(currentUser.bio || storeSettings.bio || '');
+      setLogoUrl(currentUser.avatar || storeSettings.logo_url || '');
+      setBannerUrl(currentUser.banner_url || storeSettings.banner_url || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200');
+      setAddress(currentUser.address || storeSettings.address || '');
+      setPhone(currentUser.phone || storeSettings.phone || '');
+      setWhatsapp(currentUser.whatsapp || storeSettings.whatsapp || '');
+      setContactEmail(currentUser.contact_email || storeSettings.contact_email || currentUser.email || '');
+      setPrimaryColor(storeSettings.primary_color || '#2563eb');
+    }
+  }, [currentUser, storeSettings]);
+
+  // Contextual Sales Label based on vendor specialty
+  const contextualSalesLabel = React.useMemo(() => {
+    const spec = (currentUser?.specialty || '').toLowerCase();
+    if (spec.includes('revit') || spec.includes('bim')) return 'Mes ventes & livraisons BIM';
+    if (spec.includes('struct') || spec.includes('calcul')) return "Mes ventes d'études & calculs";
+    if (spec.includes('mep') || spec.includes('fluide')) return 'Mes ventes de plans CVC';
+    if (spec.includes('mobilier') || spec.includes('design')) return 'Mes ventes de modèles 3D';
+    if (spec.includes('plugin') || spec.includes('logiciel')) return 'Mes ventes de plugins & outils';
+    return 'Mes ventes';
+  }, [currentUser?.specialty]);
 
   // Multi-vendeurs : Clients propres à ce vendeur
   const vendorClients = React.useMemo(() => {
@@ -321,11 +404,11 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
     { id: 'dashboard', label: 'Tableau de bord', icon: LayoutDashboard },
     { id: 'products', label: 'Mes produits', icon: Package, badge: vendorProducts.length },
     { id: 'revenue', label: 'Mes revenus', icon: Wallet, highlight: true },
-    { id: 'orders', label: 'Commandes', icon: ShoppingBag, badge: vendorOrders.length || (appMode === 'demo' ? '48' : undefined) },
+    { id: 'sales', label: contextualSalesLabel, icon: ShoppingBag, badge: vendorOrders.length || (appMode === 'demo' ? 48 : undefined) },
     { id: 'clients', label: 'Mes clients', icon: Users, badge: vendorClients.length },
     { id: 'store', label: 'Ma boutique & Coordonnées', icon: Store },
     { id: 'stats', label: 'Statistiques', icon: BarChart3 },
-    { id: 'reviews', label: 'Avis clients', icon: Star, badge: '124' },
+    { id: 'reviews', label: 'Avis clients', icon: Star, badge: appMode === 'demo' ? '124' : '0' },
   ];
 
   const getProductTypeIcon = (type: ProductType) => {
@@ -760,24 +843,33 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                 <div className="p-6 rounded-3xl bg-white text-slate-900 border border-slate-200/90 shadow-sm space-y-4">
                   <div className="flex items-center justify-between">
                     <span className="text-xs sm:text-sm text-slate-500 font-bold uppercase tracking-wider">Solde disponible</span>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200">
-                      Actif
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${
+                      availableBalance > 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'
+                    }`}>
+                      {availableBalance > 0 ? 'Actif' : '0.00 USD'}
                     </span>
                   </div>
 
                   <div className="text-3xl sm:text-4xl font-black text-slate-900 font-mono">
-                    $1,245.80 <span className="text-sm font-sans font-normal text-blue-600">USD</span>
+                    ${availableBalance.toFixed(2)} <span className="text-sm font-sans font-normal text-blue-600">USD</span>
                   </div>
                   
                   <button
-                    onClick={() => setIsWithdrawModalOpen(true)}
-                    className="w-full py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2"
+                    onClick={() => availableBalance > 0 && setIsWithdrawModalOpen(true)}
+                    disabled={availableBalance <= 0}
+                    className={`w-full py-3.5 rounded-2xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${
+                      availableBalance > 0 
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 cursor-pointer' 
+                        : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-60'
+                    }`}
                   >
                     <ArrowDownToLine className="w-4 h-4" />
                     <span>Effectuer un retrait</span>
                   </button>
                   <p className="text-xs text-slate-500 text-center font-medium">
-                    Virement instantané sous 24h par SEPA / SWIFT / Stripe / Wise
+                    {availableBalance > 0 
+                      ? 'Virement instantané sous 24h par SEPA / SWIFT / Stripe / Wise' 
+                      : 'Aucun solde à retirer pour l\'instant ($0.00 USD)'}
                   </p>
                 </div>
 
@@ -785,19 +877,21 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                 <div className="p-5 rounded-3xl bg-white text-slate-900 border border-slate-200/90 shadow-sm space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-bold text-slate-900">Ma boutique</span>
-                    <button onClick={() => setActiveMenu('store')} className="text-xs text-blue-600 font-bold hover:underline">
+                    <button onClick={() => setActiveMenu('store')} className="text-xs text-blue-600 font-bold hover:underline cursor-pointer">
                       Personnaliser &rarr;
                     </button>
                   </div>
                   <div className="flex items-center gap-3">
                     <img
-                      src={storeSettings.logo_url}
-                      alt={storeSettings.store_name}
+                      src={logoUrl || storeSettings.logo_url}
+                      alt={storeName}
                       className="w-11 h-11 rounded-xl object-cover ring-1 ring-slate-200 shadow-xs"
                     />
                     <div>
-                      <div className="text-sm font-bold text-slate-900">{storeSettings.store_name}</div>
-                      <div className="text-xs text-slate-500 font-medium">4.8 ★ (124 avis clients vérifiés)</div>
+                      <div className="text-sm font-bold text-slate-900">{storeName}</div>
+                      <div className="text-xs text-slate-500 font-medium">
+                        {appMode === 'demo' ? '4.8 ★ (124 avis clients vérifiés)' : '0.0 ★ (0 avis client)'}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -806,15 +900,15 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
 
             </div>
 
-            {/* Bottom: Dernières commandes reçues (FOND BLANC LISIBLE) */}
+            {/* Bottom: Dernières ventes reçues (FOND BLANC LISIBLE) */}
             <div className="p-6 sm:p-7 rounded-3xl bg-white text-slate-900 border border-slate-200/90 shadow-sm space-y-4">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <div>
-                  <h3 className="text-base sm:text-lg font-bold text-slate-900">Dernières commandes reçues</h3>
-                  <p className="text-xs text-slate-500">Historique des ventes en direct avec notification instantanée</p>
+                  <h3 className="text-base sm:text-lg font-bold text-slate-900">Dernières ventes de la Maison</h3>
+                  <p className="text-xs text-slate-500">Historique des transactions avec possibilité d'impression PDF</p>
                 </div>
-                <button onClick={() => setActiveMenu('orders')} className="text-xs sm:text-sm text-blue-600 font-bold hover:underline">
-                  Voir toutes les commandes &rarr;
+                <button onClick={() => setActiveMenu('sales')} className="text-xs sm:text-sm text-blue-600 font-bold hover:underline cursor-pointer">
+                  Voir toutes les ventes &rarr;
                 </button>
               </div>
 
@@ -886,13 +980,28 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                 </p>
               </div>
 
-              <button
-                onClick={() => setIsWithdrawModalOpen(true)}
-                className="px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center gap-2 transition-all shadow-lg shadow-emerald-600/30"
-              >
-                <ArrowDownToLine className="w-4 h-4" />
-                <span>Effectuer un retrait</span>
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setPrintModalConfig({ isOpen: true, type: 'all_sales', orders: vendorOrders })}
+                  className="px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all border border-slate-700 cursor-pointer"
+                >
+                  <Printer className="w-4 h-4 text-blue-400" />
+                  <span>Imprimer le relevé financier PDF</span>
+                </button>
+
+                <button
+                  onClick={() => availableBalance > 0 && setIsWithdrawModalOpen(true)}
+                  disabled={availableBalance <= 0}
+                  className={`px-5 py-3 rounded-xl font-bold text-sm flex items-center gap-2 transition-all ${
+                    availableBalance > 0
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 cursor-pointer'
+                      : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-50'
+                  }`}
+                >
+                  <ArrowDownToLine className="w-4 h-4" />
+                  <span>Effectuer un retrait</span>
+                </button>
+              </div>
             </div>
 
             {/* Financial Overview Cards in White Cards */}
@@ -900,26 +1009,30 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
               
               <div className="p-6 rounded-3xl bg-white text-slate-900 border border-emerald-200 shadow-sm space-y-2">
                 <div className="text-xs sm:text-sm text-emerald-700 font-bold uppercase tracking-wider">Solde disponible</div>
-                <div className="text-3xl font-black text-slate-900 font-mono">$1,245.80 USD</div>
-                <div className="text-xs text-slate-500 font-medium">Prêt pour virement bancaire ou Stripe</div>
+                <div className="text-3xl font-black text-slate-900 font-mono">${availableBalance.toFixed(2)} USD</div>
+                <div className="text-xs text-slate-500 font-medium">
+                  {availableBalance > 0 ? 'Prêt pour virement bancaire ou Stripe' : 'Solde initial à 0.00 USD'}
+                </div>
               </div>
 
               <div className="p-6 rounded-3xl bg-white text-slate-900 border border-slate-200 shadow-sm space-y-2">
                 <div className="text-xs sm:text-sm text-slate-500 font-bold uppercase tracking-wider">Revenus bruts totaux</div>
-                <div className="text-3xl font-black text-slate-900 font-mono">$3,248.50 USD</div>
-                <div className="text-xs text-emerald-600 font-bold">+18.4% ce mois</div>
+                <div className="text-3xl font-black text-slate-900 font-mono">${displayTotalSales.toFixed(2)} USD</div>
+                <div className="text-xs text-emerald-600 font-bold">
+                  {displayTotalSales > 0 ? `${vendorOrders.length} vente(s) enregistrée(s)` : '0 vente'}
+                </div>
               </div>
 
               <div className="p-6 rounded-3xl bg-white text-slate-900 border border-slate-200 shadow-sm space-y-2">
                 <div className="text-xs sm:text-sm text-slate-500 font-bold uppercase tracking-wider">Commission plateforme (15%)</div>
-                <div className="text-3xl font-black text-slate-700 font-mono">$487.27 USD</div>
-                <div className="text-xs text-slate-500 font-medium">Frais de serveur & sécurisation</div>
+                <div className="text-3xl font-black text-slate-700 font-mono">${displayPlatformCut.toFixed(2)} USD</div>
+                <div className="text-xs text-slate-500 font-medium">Hébergement & sécurisation transactions</div>
               </div>
 
               <div className="p-6 rounded-3xl bg-white text-slate-900 border border-slate-200 shadow-sm space-y-2">
-                <div className="text-xs sm:text-sm text-slate-500 font-bold uppercase tracking-wider">Revenus nets perçus</div>
-                <div className="text-3xl font-black text-blue-600 font-mono">$2,761.23 USD</div>
-                <div className="text-xs text-slate-500 font-medium">Déjà versés ou disponibles</div>
+                <div className="text-xs sm:text-sm text-slate-500 font-bold uppercase tracking-wider">Revenus nets de l'atelier (85%)</div>
+                <div className="text-3xl font-black text-blue-600 font-mono">${displayNetEarnings.toFixed(2)} USD</div>
+                <div className="text-xs text-slate-500 font-medium">Revenus nets perçus ou disponibles</div>
               </div>
 
             </div>
@@ -942,28 +1055,47 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                       <th className="py-3 px-4 font-bold">Méthode de virement</th>
                       <th className="py-3 px-4 font-bold">Coordonnées / Compte</th>
                       <th className="py-3 px-4 font-bold">Montant ($ USD)</th>
-                      <th className="py-3 px-4 font-bold rounded-r-xl">Statut</th>
+                      <th className="py-3 px-4 font-bold">Statut</th>
+                      <th className="py-3 px-4 font-bold text-right rounded-r-xl">Reçu PDF</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-medium">
-                    {payouts.map((p) => (
-                      <tr key={p.id} className="hover:bg-blue-50/40 transition-colors">
-                        <td className="py-4 px-4 font-mono font-bold text-slate-900">{p.id}</td>
-                        <td className="py-4 px-4 text-slate-600">{p.date}</td>
-                        <td className="py-4 px-4 font-semibold text-slate-800">{p.method}</td>
-                        <td className="py-4 px-4 text-slate-500 font-mono text-xs">{p.account_info}</td>
-                        <td className="py-4 px-4 font-mono font-bold text-slate-900">${p.amount.toFixed(2)} USD</td>
-                        <td className="py-4 px-4">
-                          <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                            p.status === 'completed'
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                              : 'bg-amber-50 text-amber-700 border border-amber-200'
-                          }`}>
-                            {p.status === 'completed' ? 'Virement effectué' : 'En cours de traitement'}
-                          </span>
+                    {payouts.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-slate-400">
+                          Aucun retrait n'a encore été effectué. Votre solde s'accumule avec vos ventes.
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      payouts.map((p) => (
+                        <tr key={p.id} className="hover:bg-blue-50/40 transition-colors">
+                          <td className="py-4 px-4 font-mono font-bold text-slate-900">{p.id}</td>
+                          <td className="py-4 px-4 text-slate-600">{p.date}</td>
+                          <td className="py-4 px-4 font-semibold text-slate-800">{p.method}</td>
+                          <td className="py-4 px-4 text-slate-500 font-mono text-xs">{p.account_info}</td>
+                          <td className="py-4 px-4 font-mono font-bold text-slate-900">${p.amount.toFixed(2)} USD</td>
+                          <td className="py-4 px-4">
+                            <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                              p.status === 'completed'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            }`}>
+                              {p.status === 'completed' ? 'Virement effectué' : 'En cours de traitement'}
+                            </span>
+                          </td>
+                          <td className="py-4 px-4 text-right">
+                            <button
+                              onClick={() => setPrintModalConfig({ isOpen: true, type: 'payout', payout: p })}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 text-xs font-bold border border-slate-200 cursor-pointer"
+                              title="Imprimer le reçu de virement"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span>Reçu PDF</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1136,12 +1268,23 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                         <td className="py-4 px-4 text-right">
                           <div className="flex items-center justify-end gap-2">
                             <button
+                              onClick={() => {
+                                setEditingProduct(p);
+                                setIsAddModalOpen(true);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
+                              title="Modifier ce produit et sa photo"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">Modifier</span>
+                            </button>
+                            <button
                               onClick={() => setViewingProductSpecs(p)}
-                              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-200 text-xs font-bold transition-colors flex items-center gap-1.5"
+                              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-200 text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
                               title="Voir les détails techniques adaptés"
                             >
                               <Sliders className="w-3.5 h-3.5" />
-                              <span className="hidden sm:inline">Détails adaptés</span>
+                              <span className="hidden sm:inline">Détails</span>
                             </button>
                             <button
                               onClick={() => setProductToDelete(p)}
@@ -1299,28 +1442,68 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                   </div>
                 </div>
 
-                {/* Logo & Banner URLs */}
+                {/* Logo & Banner URLs + Direct File Upload */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs sm:text-sm font-bold text-slate-800">Logo de l'atelier (URL de l'image)</label>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs sm:text-sm font-bold text-slate-800">Logo de la Maison</label>
+                      <button
+                        type="button"
+                        onClick={() => logoInputRef.current?.click()}
+                        className="text-xs text-blue-600 font-bold hover:underline cursor-pointer flex items-center gap-1"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Uploader un fichier</span>
+                      </button>
+                    </div>
                     <input
-                      type="text"
-                      value={logoUrl}
-                      onChange={(e) => setLogoUrl(e.target.value)}
-                      placeholder="https://.../logo.jpg"
-                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white"
+                      type="file"
+                      ref={logoInputRef}
+                      accept="image/*"
+                      onChange={handleLogoUpload}
+                      className="hidden"
                     />
+                    <div className="flex items-center gap-2">
+                      <img src={logoUrl} alt="Logo preview" className="w-10 h-10 rounded-xl object-cover border border-slate-200 shrink-0 bg-slate-100" />
+                      <input
+                        type="text"
+                        value={logoUrl}
+                        onChange={(e) => setLogoUrl(e.target.value)}
+                        placeholder="https://.../logo.jpg"
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white font-mono"
+                      />
+                    </div>
                   </div>
 
-                  <div className="space-y-1.5">
-                    <label className="text-xs sm:text-sm font-bold text-slate-800">Bannière de vitrine (URL)</label>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs sm:text-sm font-bold text-slate-800">Bannière de Vitrine</label>
+                      <button
+                        type="button"
+                        onClick={() => bannerInputRef.current?.click()}
+                        className="text-xs text-blue-600 font-bold hover:underline cursor-pointer flex items-center gap-1"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Uploader un fichier</span>
+                      </button>
+                    </div>
                     <input
-                      type="text"
-                      value={bannerUrl}
-                      onChange={(e) => setBannerUrl(e.target.value)}
-                      placeholder="https://.../banner.jpg"
-                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white"
+                      type="file"
+                      ref={bannerInputRef}
+                      accept="image/*"
+                      onChange={handleBannerUpload}
+                      className="hidden"
                     />
+                    <div className="flex items-center gap-2">
+                      <img src={bannerUrl} alt="Banner preview" className="w-16 h-10 rounded-xl object-cover border border-slate-200 shrink-0 bg-slate-100" />
+                      <input
+                        type="text"
+                        value={bannerUrl}
+                        onChange={(e) => setBannerUrl(e.target.value)}
+                        placeholder="https://.../banner.jpg"
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white font-mono"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -1497,6 +1680,248 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
           </div>
         )}
 
+        {/* ======================================================================= */}
+        {/* 5. MES VENTES (ADAPTÉ AU CONTEXTE DU TYPE DE VENDEUR) */}
+        {/* ======================================================================= */}
+        {activeMenu === 'sales' && (
+          <div className="space-y-6 animate-fadeIn font-['Plus_Jakarta_Sans',sans-serif]">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white">{contextualSalesLabel}</h1>
+                <p className="text-sm text-slate-400">
+                  Historique détaillé des transactions et livraisons directes pour l'atelier <strong>{currentVendorName}</strong>.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setPrintModalConfig({ isOpen: true, type: 'all_sales', orders: vendorOrders })}
+                  disabled={vendorOrders.length === 0}
+                  className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all ${
+                    vendorOrders.length > 0 
+                      ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-600/30 cursor-pointer' 
+                      : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-50'
+                  }`}
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Imprimer le grand livre des ventes PDF</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Sales Table in White Card */}
+            <div className="p-6 sm:p-8 rounded-3xl bg-white text-slate-900 border border-slate-200/90 shadow-sm space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <h3 className="text-base sm:text-lg font-bold text-slate-900">Registre officiel des ventes</h3>
+                <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                  {vendorOrders.length} vente(s) enregistrée(s)
+                </span>
+              </div>
+
+              {vendorOrders.length === 0 ? (
+                <div className="text-center py-16 space-y-3">
+                  <div className="w-16 h-16 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
+                    <ShoppingBag className="w-8 h-8" />
+                  </div>
+                  <h4 className="font-bold text-slate-900 text-lg">Aucune vente enregistrée pour l'instant</h4>
+                  <p className="text-sm text-slate-500 max-w-md mx-auto">
+                    Votre vitrine <strong>nexusbim.app/vendeur/{currentVendorSlug}</strong> est active. Dès qu'un client achète l'un de vos produits, sa commande apparaîtra ici avec facture PDF téléchargeable.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs sm:text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                        <th className="py-3 px-4 font-bold rounded-l-xl">Réf. & Date</th>
+                        <th className="py-3 px-4 font-bold">Client Acheteur</th>
+                        <th className="py-3 px-4 font-bold">Produits commandés</th>
+                        <th className="py-3 px-4 font-bold">Total Brut</th>
+                        <th className="py-3 px-4 font-bold text-emerald-700">Net Vendeur (85%)</th>
+                        <th className="py-3 px-4 font-bold">Statut</th>
+                        <th className="py-3 px-4 font-bold text-right rounded-r-xl">Facture PDF</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-medium">
+                      {vendorOrders.map((ord) => {
+                        const matchingItems = ord.items.filter(i => 
+                          i.product.vendor_name === currentVendorName || 
+                          i.product.vendor_slug === currentVendorSlug || 
+                          (appMode === 'demo' && i.product.vendor_name === 'StudioArch')
+                        );
+                        const orderGross = matchingItems.reduce((sum, i) => sum + i.price, 0);
+                        const orderNet = orderGross * 0.85;
+
+                        return (
+                          <tr key={ord.id} className="hover:bg-blue-50/40 transition-colors">
+                            <td className="py-4 px-4 font-mono">
+                              <div className="font-bold text-slate-900">{ord.id.slice(0, 10)}</div>
+                              <div className="text-[11px] text-slate-500">{new Date(ord.created_at).toLocaleDateString('fr-FR')}</div>
+                            </td>
+                            <td className="py-4 px-4">
+                              <div className="font-bold text-slate-900">{ord.customer_name}</div>
+                              <div className="text-xs text-slate-500 font-mono">{ord.customer_email}</div>
+                            </td>
+                            <td className="py-4 px-4 max-w-xs">
+                              {matchingItems.map((item, idx) => (
+                                <div key={idx} className="truncate font-semibold text-slate-800 text-xs">
+                                  • {item.product.title}
+                                </div>
+                              ))}
+                            </td>
+                            <td className="py-4 px-4 font-mono font-bold text-slate-900">${orderGross.toFixed(2)} USD</td>
+                            <td className="py-4 px-4 font-mono font-black text-emerald-700">${orderNet.toFixed(2)} USD</td>
+                            <td className="py-4 px-4">
+                              <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold">
+                                Payée & Livrée
+                              </span>
+                            </td>
+                            <td className="py-4 px-4 text-right">
+                              <button
+                                onClick={() => setPrintModalConfig({ isOpen: true, type: 'sale', order: ord })}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold border border-blue-200 transition-colors cursor-pointer"
+                                title="Imprimer la facture de vente"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>Facture PDF</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================================= */}
+        {/* 6. STATISTIQUES AVEC LOGIQUE DYNAMIQUE & IMPRESSION PDF */}
+        {/* ======================================================================= */}
+        {activeMenu === 'stats' && (
+          <div className="space-y-6 animate-fadeIn font-['Plus_Jakarta_Sans',sans-serif]">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Statistiques de Performance</h1>
+                <p className="text-sm text-slate-400">
+                  Analytique commerciale en temps réel pour l'atelier <strong>{currentVendorName}</strong>.
+                </p>
+              </div>
+
+              <button
+                onClick={() => setPrintModalConfig({
+                  isOpen: true,
+                  type: 'stats',
+                  statsData: {
+                    grossSales: displayTotalSales,
+                    netEarnings: displayNetEarnings,
+                    orderCount: vendorOrders.length,
+                    avgOrder: vendorOrders.length > 0 ? (displayTotalSales / vendorOrders.length) : 0,
+                    productsCount: vendorProducts.length
+                  }
+                })}
+                className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-blue-600/30 cursor-pointer"
+              >
+                <Printer className="w-4 h-4" />
+                <span>Imprimer les statistiques PDF</span>
+              </button>
+            </div>
+
+            {/* KPI Overview Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+              <div className="p-6 rounded-3xl bg-white text-slate-900 border border-slate-200 shadow-sm space-y-2">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Chiffre d'Affaires Brut</span>
+                <div className="text-3xl font-black text-slate-900 font-mono">${displayTotalSales.toFixed(2)} USD</div>
+                <div className="text-xs text-slate-500">{vendorOrders.length} transaction(s)</div>
+              </div>
+
+              <div className="p-6 rounded-3xl bg-white text-slate-900 border border-slate-200 shadow-sm space-y-2">
+                <span className="text-xs font-bold text-emerald-700 uppercase tracking-wider">Revenus Nets Vendeur (85%)</span>
+                <div className="text-3xl font-black text-emerald-700 font-mono">${displayNetEarnings.toFixed(2)} USD</div>
+                <div className="text-xs text-slate-500">Reversement garanti sous 24h</div>
+              </div>
+
+              <div className="p-6 rounded-3xl bg-white text-slate-900 border border-slate-200 shadow-sm space-y-2">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Panier Moyen</span>
+                <div className="text-3xl font-black text-blue-600 font-mono">
+                  ${vendorOrders.length > 0 ? (displayTotalSales / vendorOrders.length).toFixed(2) : '0.00'} USD
+                </div>
+                <div className="text-xs text-slate-500">Moyenne par commande</div>
+              </div>
+
+              <div className="p-6 rounded-3xl bg-white text-slate-900 border border-slate-200 shadow-sm space-y-2">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Produits Actifs en Ligne</span>
+                <div className="text-3xl font-black text-slate-900 font-mono">{vendorProducts.length}</div>
+                <div className="text-xs text-slate-500">Ressources téléchargeables</div>
+              </div>
+            </div>
+
+            {/* Visual Performance Charts */}
+            <div className="p-6 sm:p-8 rounded-3xl bg-white text-slate-900 border border-slate-200 shadow-sm space-y-5">
+              <h3 className="text-base sm:text-lg font-bold text-slate-900">Répartition des ventes par logiciel & format</h3>
+              
+              <div className="space-y-4">
+                {[
+                  { label: 'Revit (.rvt / .rfa)', pct: displayTotalSales > 0 ? 65 : 0, color: 'bg-blue-600' },
+                  { label: 'openBIM / IFC 4 (.ifc)', pct: displayTotalSales > 0 ? 20 : 0, color: 'bg-emerald-600' },
+                  { label: 'Dossiers techniques PDF', pct: displayTotalSales > 0 ? 10 : 0, color: 'bg-purple-600' },
+                  { label: 'Plugins & Scripts (.exe / .dyn)', pct: displayTotalSales > 0 ? 5 : 0, color: 'bg-amber-500' },
+                ].map((item, idx) => (
+                  <div key={idx} className="space-y-1.5">
+                    <div className="flex justify-between text-xs sm:text-sm font-bold text-slate-700">
+                      <span>{item.label}</span>
+                      <span className="font-mono">{item.pct}%</span>
+                    </div>
+                    <div className="w-full h-3 rounded-full bg-slate-100 overflow-hidden">
+                      <div className={`h-full ${item.color} transition-all duration-500`} style={{ width: `${item.pct}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================================= */}
+        {/* 7. AVIS CLIENTS (MIS À ZÉRO PAR DÉFAUT EN MODE RÉEL) */}
+        {/* ======================================================================= */}
+        {activeMenu === 'reviews' && (
+          <div className="space-y-6 animate-fadeIn font-['Plus_Jakarta_Sans',sans-serif]">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Avis & Évaluations Clients</h1>
+                <p className="text-sm text-slate-400">
+                  Retours d'expérience et notes certifiées laissées par vos acheteurs.
+                </p>
+              </div>
+
+              <div className="px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-amber-400 font-bold flex items-center gap-1.5">
+                <Star className="w-4 h-4 fill-amber-400" />
+                <span>{appMode === 'demo' ? '4.8 / 5.0 (124 avis)' : '0.0 / 5.0 (0 avis)'}</span>
+              </div>
+            </div>
+
+            <div className="p-8 sm:p-14 rounded-3xl bg-white text-slate-900 border border-slate-200/90 shadow-sm text-center space-y-4">
+              <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 text-amber-500 flex items-center justify-center mx-auto">
+                <Star className="w-8 h-8" />
+              </div>
+
+              <div className="space-y-1">
+                <h3 className="text-lg sm:text-xl font-bold text-slate-900">
+                  {appMode === 'demo' ? '124 avis clients certifiés vérifiés' : 'Aucun avis client pour le moment'}
+                </h3>
+                <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
+                  {appMode === 'demo' 
+                    ? 'Tous les avis de la démo sont notés 4.8 étoiles sur 5.'
+                    : 'Les évaluations et commentaires s\'afficheront ici automatiquement au fur et à mesure que vos acheteurs téléchargent et utilisent vos modèles BIM.'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
       </main>
 
       {/* ========================================================================= */}
@@ -1538,7 +1963,7 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                 {/* Available balance highlight */}
                 <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 flex justify-between items-center">
                   <span className="text-slate-600 font-bold">Solde disponible :</span>
-                  <span className="font-mono font-black text-emerald-700 text-xl">$1,245.80 USD</span>
+                  <span className="font-mono font-black text-emerald-700 text-xl">${availableBalance.toFixed(2)} USD</span>
                 </div>
 
                 <div className="space-y-1.5">
@@ -1548,20 +1973,26 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                     <input
                       type="number"
                       step="0.01"
-                      max={1245.80}
+                      min="1.00"
+                      max={availableBalance}
                       required
+                      disabled={availableBalance <= 0}
                       value={withdrawAmount}
                       onChange={(e) => setWithdrawAmount(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-8 pr-14 py-3 text-slate-900 font-mono font-bold text-sm focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-8 pr-14 py-3 text-slate-900 font-mono font-bold text-sm focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100 disabled:opacity-50"
                     />
                     <button
                       type="button"
-                      onClick={() => setWithdrawAmount('1245.80')}
-                      className="absolute right-3 top-2.5 text-xs text-blue-600 font-bold hover:underline"
+                      disabled={availableBalance <= 0}
+                      onClick={() => setWithdrawAmount(availableBalance.toFixed(2))}
+                      className="absolute right-3 top-2.5 text-xs text-blue-600 font-bold hover:underline disabled:opacity-40 cursor-pointer"
                     >
                       Max
                     </button>
                   </div>
+                  {availableBalance <= 0 && (
+                    <p className="text-xs text-rose-500 font-medium">Vous n'avez aucun fonds disponible à retirer ($0.00 USD).</p>
+                  )}
                 </div>
 
                 <div className="space-y-1.5">
@@ -1605,7 +2036,12 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                   </button>
                   <button
                     type="submit"
-                    className="px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-bold text-xs sm:text-sm hover:bg-emerald-700 transition-all shadow-md shadow-emerald-600/30"
+                    disabled={availableBalance <= 0 || (parseFloat(withdrawAmount) || 0) <= 0 || (parseFloat(withdrawAmount) || 0) > availableBalance}
+                    className={`px-6 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all ${
+                      availableBalance > 0 
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md shadow-emerald-600/30 cursor-pointer' 
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                    }`}
                   >
                     Confirmer le retrait
                   </button>
@@ -1709,15 +2145,48 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
         </div>
       )}
 
-      {/* Add Product Modal */}
+      {/* Add / Edit Product Modal */}
       <AddProductModal
         isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
+        onClose={() => {
+          setIsAddModalOpen(false);
+          setEditingProduct(null);
+        }}
         onAddProduct={onAddProduct}
+        onUpdateProduct={onUpdateProduct}
+        initialProduct={editingProduct}
         vendorName={currentVendorName}
         vendorSlug={currentVendorSlug}
         vendorAvatar={currentUser?.avatar}
         vendorId={currentUser?.id}
+      />
+
+      {/* Print PDF Invoice & Report Modal */}
+      <PrintInvoiceModal
+        isOpen={printModalConfig.isOpen}
+        onClose={() => setPrintModalConfig({ ...printModalConfig, isOpen: false })}
+        type={printModalConfig.type}
+        order={printModalConfig.order}
+        orders={vendorOrders}
+        payout={printModalConfig.payout}
+        storeSettings={{
+          ...storeSettings,
+          store_name: storeName,
+          logo_url: logoUrl,
+          banner_url: bannerUrl,
+          phone,
+          whatsapp,
+          address,
+          contact_email: contactEmail
+        }}
+        currentUser={currentUser}
+        statsData={printModalConfig.type === 'stats' ? {
+          grossSales: displayTotalSales,
+          netEarnings: displayNetEarnings,
+          orderCount: vendorOrders.length,
+          avgOrder: vendorOrders.length > 0 ? (displayTotalSales / vendorOrders.length) : 0,
+          productsCount: vendorProducts.length
+        } : undefined}
       />
 
       {/* Product Deletion Confirmation Modal */}

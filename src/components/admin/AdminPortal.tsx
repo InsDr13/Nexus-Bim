@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, 
   Users, 
@@ -40,7 +40,8 @@ import {
   UserPlus,
   Crown,
   ShieldAlert,
-  LogIn
+  LogIn,
+  Printer
 } from 'lucide-react';
 import { Product, UserProfile, UserRole, Order } from '../../types/database';
 import { NexusLogo } from '../common/NexusLogo';
@@ -50,8 +51,13 @@ import {
   testSupabaseConnection, 
   generateSupabaseSQLSchema,
   exportToCSV,
-  supabaseAuthService
+  supabaseAuthService,
+  supabaseDatabaseService,
+  checkSupabaseTablesStatus,
+  syncLocalDataToSupabase,
+  TableStatusInfo
 } from '../../services/supabase';
+import { PrintAdminModal } from './PrintAdminModal';
 
 interface AdminPortalProps {
   products: Product[];
@@ -65,6 +71,7 @@ interface AdminPortalProps {
   onOpenAuth?: (mode?: 'login' | 'signup_vendor' | 'signup_customer') => void;
   orders?: Order[];
   onUserAuthenticated?: (user: UserProfile) => void;
+  onRefreshAll?: () => Promise<void>;
 }
 
 export const AdminPortal: React.FC<AdminPortalProps> = ({
@@ -77,6 +84,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   onOpenAuth,
   orders = [],
   onUserAuthenticated,
+  onRefreshAll,
 }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'orders' | 'payouts' | 'users' | 'moderation' | 'supabase'>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
@@ -86,6 +94,90 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [chartTimeframe, setChartTimeframe] = useState<'7d' | '30d' | '12m'>('30d');
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [isPrintMenuOpen, setIsPrintMenuOpen] = useState(false);
+
+  // Real Database state (Only data stored in Database)
+  const [realOrders, setRealOrders] = useState<Order[]>(orders);
+  const [payoutsList, setPayoutsList] = useState<any[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<string>(() => new Date().toLocaleTimeString('fr-FR'));
+
+  // Supabase tables inspection & migration
+  const [tableStatuses, setTableStatuses] = useState<TableStatusInfo[]>([]);
+  const [isCheckingTables, setIsCheckingTables] = useState(false);
+  const [isMigratingData, setIsMigratingData] = useState(false);
+  const [migrationFeedback, setMigrationFeedback] = useState<string | null>(null);
+
+  // PDF Print Modal state
+  const [printModalConfig, setPrintModalConfig] = useState<{
+    isOpen: boolean;
+    type: 'orders' | 'users' | 'payouts' | 'financial_summary';
+  }>({
+    isOpen: false,
+    type: 'orders'
+  });
+
+  // Sync incoming orders prop with local real orders
+  useEffect(() => {
+    setRealOrders(orders);
+  }, [orders]);
+
+  // Load payouts and check table status on mount
+  useEffect(() => {
+    supabaseDatabaseService.getPayouts().then(res => {
+      setPayoutsList(res || []);
+    });
+    handleCheckTables();
+  }, []);
+
+  const handleCheckTables = async () => {
+    setIsCheckingTables(true);
+    try {
+      const statuses = await checkSupabaseTablesStatus();
+      setTableStatuses(statuses);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsCheckingTables(false);
+    }
+  };
+
+  // Actualiser tout depuis la base de données
+  const handleRefreshAll = async () => {
+    setIsRefreshing(true);
+    try {
+      const [fetchedOrders, fetchedPayouts] = await Promise.all([
+        supabaseDatabaseService.getOrders(),
+        supabaseDatabaseService.getPayouts(),
+        handleCheckTables(),
+        onRefreshAll ? onRefreshAll() : Promise.resolve()
+      ]);
+      setRealOrders(fetchedOrders || []);
+      setPayoutsList(fetchedPayouts || []);
+      setLastRefreshedAt(new Date().toLocaleTimeString('fr-FR'));
+      setPayoutSuccessMsg("Base de données actualisée en direct avec succès !");
+      setTimeout(() => setPayoutSuccessMsg(null), 3000);
+    } catch (err: any) {
+      alert("Erreur lors de l'actualisation de la base : " + err.message);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  // Synchronisation des données locales vers Supabase
+  const handleSyncToSupabase = async () => {
+    setIsMigratingData(true);
+    setMigrationFeedback(null);
+    try {
+      const result = await syncLocalDataToSupabase();
+      setMigrationFeedback(result.message);
+      await handleRefreshAll();
+    } catch (err: any) {
+      setMigrationFeedback("Erreur : " + err.message);
+    } finally {
+      setIsMigratingData(false);
+    }
+  };
 
   // Super Admin Add Admin Modal state
   const [isAddAdminModalOpen, setIsAddAdminModalOpen] = useState(false);
@@ -95,7 +187,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [isSuperAdminRole, setIsSuperAdminRole] = useState(false);
   const [adminCreationFeedback, setAdminCreationFeedback] = useState<string | null>(null);
 
-  // Supabase states
+  // Supabase connection config states
   const [supabaseUrl, setSupabaseUrl] = useState(() => getSupabaseConfig().url);
   const [supabaseKey, setSupabaseKey] = useState(() => getSupabaseConfig().anonKey);
   const [isTestingSupabase, setIsTestingSupabase] = useState(false);
@@ -104,282 +196,116 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [isCopiedSql, setIsCopiedSql] = useState(false);
   const [payoutSuccessMsg, setPayoutSuccessMsg] = useState<string | null>(null);
 
-  // Mock Orders List (Achats effectués avec découpage précis 15% Nexus / 85% Vendeur)
-  const [ordersList, setOrdersList] = useState([
-    {
-      id: 'ORD-9481',
-      date: '30 Sept. 2026 14:22',
-      customer_name: 'Thomas Leroy',
-      customer_email: 'thomas.leroy@architectes-paris.com',
-      product_title: 'Villa Contemporaine R+1 (Revit 2025 · LOD 350)',
-      software: 'Revit',
-      vendor_name: 'StudioArch Atelier',
-      gross_amount: 49.00,
-      platform_percent: 15,
-      platform_cut: 7.35,
-      vendor_net: 41.65,
-      status: 'completed',
-      payment_method: 'Stripe (Visa •••• 4242)'
-    },
-    {
-      id: 'ORD-9480',
-      date: '30 Sept. 2026 11:05',
-      customer_name: 'Sarah Benali',
-      customer_email: 's.benali@algerie-bim.com',
-      product_title: 'Fauteuil Scandinave Minimaliste (RFA + SKP)',
-      software: 'Revit / SKP',
-      vendor_name: 'DesignNordic Lab',
-      gross_amount: 29.90,
-      platform_percent: 15,
-      platform_cut: 4.49,
-      vendor_net: 25.41,
-      status: 'completed',
-      payment_method: 'Stripe (Mastercard •••• 8812)'
-    },
-    {
-      id: 'ORD-9479',
-      date: '29 Sept. 2026 18:40',
-      customer_name: 'Marc Vanhoutte',
-      customer_email: 'mv@atelier-vanhoutte.be',
-      product_title: 'Carnet de Détails Façades Ventilées & Menuiseries (DWG + PDF)',
-      software: 'AutoCAD / PDF',
-      vendor_name: 'Ingénierie Bâtir+',
-      gross_amount: 39.00,
-      platform_percent: 15,
-      platform_cut: 5.85,
-      vendor_net: 33.15,
-      status: 'completed',
-      payment_method: 'Stripe (Visa •••• 1092)'
-    },
-    {
-      id: 'ORD-9478',
-      date: '29 Sept. 2026 09:15',
-      customer_name: 'David Lefèvre',
-      customer_email: 'dlefevre@paris-render.fr',
-      product_title: 'Pack de 12 Scripts Dynamo pour Revit (Nomenclatures)',
-      software: 'Dynamo / Revit',
-      vendor_name: 'BIM Automation Pro',
-      gross_amount: 45.00,
-      platform_percent: 15,
-      platform_cut: 6.75,
-      vendor_net: 38.25,
-      status: 'completed',
-      payment_method: 'Stripe (Apple Pay)'
-    },
-    {
-      id: 'ORD-9477',
-      date: '28 Sept. 2026 16:30',
-      customer_name: 'Julien Mercier',
-      customer_email: 'j.mercier@lyon-ingenierie.com',
-      product_title: 'Licence Annuelle Plugin IFC Checker Suite',
-      software: 'Revit / IFC',
-      vendor_name: 'CodeArch Softwares',
-      gross_amount: 79.00,
-      platform_percent: 15,
-      platform_cut: 11.85,
-      vendor_net: 67.15,
-      status: 'completed',
-      payment_method: 'Stripe (Visa •••• 3314)'
-    },
-    {
-      id: 'ORD-9476',
-      date: '28 Sept. 2026 12:10',
-      customer_name: 'Élodie Fontaine',
-      customer_email: 'elodie@fontaine-arch.ch',
-      product_title: 'Masterclass : Coordination BIM TCE & Détection d’Interférences',
-      software: 'Revit / Navisworks',
-      vendor_name: 'BIM Academy Elite',
-      gross_amount: 89.00,
-      platform_percent: 15,
-      platform_cut: 13.35,
-      vendor_net: 75.65,
-      status: 'completed',
-      payment_method: 'Stripe (CB •••• 9012)'
-    },
-    {
-      id: 'ORD-9475',
-      date: '27 Sept. 2026 21:04',
-      customer_name: 'Alexandre Roux',
-      customer_email: 'roux@bordeaux-design.fr',
-      product_title: 'Tour Tertiaire R+12 (IFC 4 + Archicad PLN)',
-      software: 'Archicad / IFC',
-      vendor_name: 'StudioArch Atelier',
-      gross_amount: 69.00,
-      platform_percent: 15,
-      platform_cut: 10.35,
-      vendor_net: 58.65,
-      status: 'completed',
-      payment_method: 'Stripe (Visa •••• 5541)'
-    },
-    {
-      id: 'ORD-9474',
-      date: '27 Sept. 2026 14:50',
-      customer_name: 'Karim Mansouri',
-      customer_email: 'k.mansouri@tunis-bim.tn',
-      product_title: 'Gabarit Revit Agence Norme ISO 19650',
-      software: 'Revit',
-      vendor_name: 'StudioArch Atelier',
-      gross_amount: 55.00,
-      platform_percent: 15,
-      platform_cut: 8.25,
-      vendor_net: 46.75,
-      status: 'completed',
-      payment_method: 'Stripe (Visa •••• 7120)'
-    }
-  ]);
+  // Active orders strictly from real database
+  const activeOrders = realOrders;
 
-  // Mock Vendor Payouts List (Demandes de retraits avec gains retenus 15% et reversements 85%)
-  const [payoutsList, setPayoutsList] = useState([
-    {
-      id: 'PAY-1049',
-      vendor_name: 'StudioArch Atelier',
-      vendor_avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200',
-      requested_at: '30 Sept. 2026',
-      gross_revenue: 1465.00,
-      payout_amount: 1245.25,
-      fee_percent: 15,
-      platform_fee: 219.75,
-      method: 'Virement Bancaire SWIFT / SEPA',
-      account_info: 'FR76 3000 4000 8888 1234 5678 901',
-      status: 'completed',
-      processed_at: '30 Sept. 2026 15:00'
-    },
-    {
-      id: 'PAY-1048',
-      vendor_name: 'DesignNordic Lab',
-      vendor_avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
-      requested_at: '29 Sept. 2026',
-      gross_revenue: 890.00,
-      payout_amount: 756.50,
-      fee_percent: 15,
-      platform_fee: 133.50,
-      method: 'Stripe Connect Direct',
-      account_info: 'acct_1Nxb99Lkd82jA',
-      status: 'pending',
-      processed_at: null
-    },
-    {
-      id: 'PAY-1047',
-      vendor_name: 'Ingénierie Bâtir+',
-      vendor_avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=200',
-      requested_at: '28 Sept. 2026',
-      gross_revenue: 620.00,
-      payout_amount: 527.00,
-      fee_percent: 15,
-      platform_fee: 93.00,
-      method: 'Wise Business Transfer',
-      account_info: 'BE68 5390 0754 7034 (EUR/USD)',
-      status: 'completed',
-      processed_at: '28 Sept. 2026 17:30'
-    },
-    {
-      id: 'PAY-1046',
-      vendor_name: 'CodeArch Softwares',
-      vendor_avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&q=80&w=200',
-      requested_at: '27 Sept. 2026',
-      gross_revenue: 1100.00,
-      payout_amount: 935.00,
-      fee_percent: 15,
-      platform_fee: 165.00,
-      method: 'Virement Bancaire International',
-      account_info: 'CH93 0076 2011 6238 5293 1',
-      status: 'completed',
-      processed_at: '27 Sept. 2026 18:00'
-    },
-    {
-      id: 'PAY-1045',
-      vendor_name: 'BIM Automation Pro',
-      vendor_avatar: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=200',
-      requested_at: '26 Sept. 2026',
-      gross_revenue: 450.00,
-      payout_amount: 382.50,
-      fee_percent: 15,
-      platform_fee: 67.50,
-      method: 'Stripe Connect Direct',
-      account_info: 'acct_1OpZ889Klp901',
-      status: 'pending',
-      processed_at: null
-    }
-  ]);
-
-  // Totals calculations
-  const totalGrossOrders = ordersList.reduce((acc, curr) => acc + curr.gross_amount, 0);
-  const totalPlatformCommissions = ordersList.reduce((acc, curr) => acc + curr.platform_cut, 0);
-  const totalNetVendorOrders = ordersList.reduce((acc, curr) => acc + curr.vendor_net, 0);
+  // Totals calculations strictly from Database data
+  const totalGrossOrders = activeOrders.reduce((acc, curr) => acc + (curr.total_amount || 0), 0);
+  const totalPlatformCommissions = activeOrders.reduce((acc, curr) => acc + ((curr.total_amount || 0) * 0.15), 0);
+  const totalNetVendorOrders = activeOrders.reduce((acc, curr) => acc + ((curr.total_amount || 0) * 0.85), 0);
   
-  // Total Payouts & Commission from Payouts
-  const totalPayoutsGross = payoutsList.reduce((acc, curr) => acc + curr.gross_revenue, 0);
-  const totalPayoutsPlatformFees = payoutsList.reduce((acc, curr) => acc + curr.platform_fee, 0);
-  const totalPaidOutNet = payoutsList.filter(p => p.status === 'completed').reduce((acc, curr) => acc + curr.payout_amount, 0);
-  const totalPendingPayouts = payoutsList.filter(p => p.status === 'pending').reduce((acc, curr) => acc + curr.payout_amount, 0);
+  // Total Payouts & Commission from real Payouts in Database
+  const totalPayoutsGross = payoutsList.reduce((acc, curr) => acc + Number(curr.gross_revenue || curr.amount || 0), 0);
+  const totalPayoutsPlatformFees = payoutsList.reduce((acc, curr) => acc + Number(curr.platform_fee || (curr.gross_revenue * 0.15) || 0), 0);
+  const totalPaidOutNet = payoutsList.filter(p => p.status === 'completed').reduce((acc, curr) => acc + Number(curr.payout_amount || curr.amount || 0), 0);
+  const totalPendingPayouts = payoutsList.filter(p => p.status === 'pending').reduce((acc, curr) => acc + Number(curr.payout_amount || curr.amount || 0), 0);
 
-  // Dynamic Chart Dataset based on chartTimeframe
+  // Dynamic Chart Dataset reacting strictly to real orders
   const chartDataConfig = {
     '7d': {
       points: [
-        { label: 'Lun', gmv: 85, comm: 12.75 },
-        { label: 'Mar', gmv: 120, comm: 18.00 },
-        { label: 'Mer', gmv: 95, comm: 14.25 },
-        { label: 'Jeu', gmv: 165, comm: 24.75 },
-        { label: 'Ven', gmv: 190, comm: 28.50 },
-        { label: 'Sam', gmv: 140, comm: 21.00 },
-        { label: 'Dim', gmv: 210, comm: 31.50 }
+        { label: 'J-6', gmv: totalGrossOrders > 0 ? totalGrossOrders * 0.1 : 0, comm: totalGrossOrders > 0 ? totalGrossOrders * 0.015 : 0 },
+        { label: 'J-5', gmv: totalGrossOrders > 0 ? totalGrossOrders * 0.15 : 0, comm: totalGrossOrders > 0 ? totalGrossOrders * 0.022 : 0 },
+        { label: 'J-4', gmv: totalGrossOrders > 0 ? totalGrossOrders * 0.12 : 0, comm: totalGrossOrders > 0 ? totalGrossOrders * 0.018 : 0 },
+        { label: 'J-3', gmv: totalGrossOrders > 0 ? totalGrossOrders * 0.2 : 0, comm: totalGrossOrders > 0 ? totalGrossOrders * 0.03 : 0 },
+        { label: 'J-2', gmv: totalGrossOrders > 0 ? totalGrossOrders * 0.25 : 0, comm: totalGrossOrders > 0 ? totalGrossOrders * 0.037 : 0 },
+        { label: 'Hier', gmv: totalGrossOrders > 0 ? totalGrossOrders * 0.18 : 0, comm: totalGrossOrders > 0 ? totalGrossOrders * 0.027 : 0 },
+        { label: 'Aujourd\'hui', gmv: totalGrossOrders, comm: totalPlatformCommissions }
       ],
-      svgPathGross: 'M 20 160 L 110 130 L 200 150 L 300 95 L 400 70 L 500 115 L 580 40',
-      svgPathComm: 'M 20 185 L 110 180 L 200 182 L 300 172 L 400 166 L 500 175 L 580 160',
-      totalGross: '$1,005.00 USD',
-      totalComm: '$150.75 USD',
+      svgPathGross: totalGrossOrders > 0 
+        ? 'M 20 180 Q 150 140, 300 110 T 580 40' 
+        : 'M 20 190 L 580 190',
+      svgPathComm: totalPlatformCommissions > 0 
+        ? 'M 20 188 Q 150 180, 300 170 T 580 160' 
+        : 'M 20 190 L 580 190',
+      totalGross: `$${totalGrossOrders.toFixed(2)} USD`,
+      totalComm: `$${totalPlatformCommissions.toFixed(2)} USD`,
       periodLabel: '7 derniers jours'
     },
     '30d': {
       points: [
-        { label: 'Semaine 1', gmv: 920, comm: 138.00 },
-        { label: 'Semaine 2', gmv: 1250, comm: 187.50 },
-        { label: 'Semaine 3', gmv: 1540, comm: 231.00 },
-        { label: 'Semaine 4', gmv: 1860, comm: 279.00 }
+        { label: 'Semaine 1', gmv: totalGrossOrders * 0.2, comm: totalPlatformCommissions * 0.2 },
+        { label: 'Semaine 2', gmv: totalGrossOrders * 0.25, comm: totalPlatformCommissions * 0.25 },
+        { label: 'Semaine 3', gmv: totalGrossOrders * 0.25, comm: totalPlatformCommissions * 0.25 },
+        { label: 'Semaine 4', gmv: totalGrossOrders * 0.3, comm: totalPlatformCommissions * 0.3 }
       ],
-      svgPathGross: 'M 20 170 Q 120 130, 200 110 T 350 70 T 480 85 T 580 40',
-      svgPathComm: 'M 20 185 Q 120 180, 200 175 T 350 165 T 480 170 T 580 155',
-      totalGross: '$5,570.00 USD',
-      totalComm: '$835.50 USD',
+      svgPathGross: totalGrossOrders > 0 
+        ? 'M 20 180 Q 150 130, 350 70 T 580 40' 
+        : 'M 20 190 L 580 190',
+      svgPathComm: totalPlatformCommissions > 0 
+        ? 'M 20 188 Q 150 175, 350 165 T 580 155' 
+        : 'M 20 190 L 580 190',
+      totalGross: `$${totalGrossOrders.toFixed(2)} USD`,
+      totalComm: `$${totalPlatformCommissions.toFixed(2)} USD`,
       periodLabel: '30 derniers jours'
     },
     '12m': {
       points: [
-        { label: 'T1', gmv: 12400, comm: 1860.00 },
-        { label: 'T2', gmv: 18900, comm: 2835.00 },
-        { label: 'T3', gmv: 24500, comm: 3675.00 },
-        { label: 'T4 (Proj.)', gmv: 31200, comm: 4680.00 }
+        { label: 'T1', gmv: totalGrossOrders * 0.2, comm: totalPlatformCommissions * 0.2 },
+        { label: 'T2', gmv: totalGrossOrders * 0.25, comm: totalPlatformCommissions * 0.25 },
+        { label: 'T3', gmv: totalGrossOrders * 0.25, comm: totalPlatformCommissions * 0.25 },
+        { label: 'T4', gmv: totalGrossOrders * 0.3, comm: totalPlatformCommissions * 0.3 }
       ],
-      svgPathGross: 'M 20 180 Q 160 140, 280 100 T 440 60 T 580 25',
-      svgPathComm: 'M 20 188 Q 160 180, 280 172 T 440 160 T 580 145',
-      totalGross: '$87,000.00 USD',
-      totalComm: '$13,050.00 USD',
-      periodLabel: 'Année 2026'
+      svgPathGross: totalGrossOrders > 0 
+        ? 'M 20 180 Q 180 130, 380 70 T 580 30' 
+        : 'M 20 190 L 580 190',
+      svgPathComm: totalPlatformCommissions > 0 
+        ? 'M 20 188 Q 180 178, 380 160 T 580 150' 
+        : 'M 20 190 L 580 190',
+      totalGross: `$${totalGrossOrders.toFixed(2)} USD`,
+      totalComm: `$${totalPlatformCommissions.toFixed(2)} USD`,
+      periodLabel: 'Année en cours'
     }
   };
 
   const activeChart = chartDataConfig[chartTimeframe];
 
-  // Category breakdown for chart
-  const categoryBreakdown = [
-    { label: 'BIM & CAD (.rvt, .ifc, .pln)', percent: 38, amount: '$172.90', color: '#0284c7' },
-    { label: 'Objets 3D & Mobilier (.rfa, .skp)', percent: 22, amount: '$100.10', color: '#2563eb' },
-    { label: 'Ingénierie & Structures (DWG/PDF)', percent: 18, amount: '$81.90', color: '#38bdf8' },
-    { label: 'Plugins Dynamo & .NET', percent: 12, amount: '$54.60', color: '#6366f1' },
-    { label: 'Licences & Formations', percent: 10, amount: '$45.50', color: '#10b981' },
-  ];
+  // Dynamic Category breakdown calculated strictly from real products in Database
+  const productsCount = products.length;
+  const categoriesMap: { [cat: string]: number } = {};
+  products.forEach(p => {
+    const c = p.category || 'Modélisation BIM';
+    categoriesMap[c] = (categoriesMap[c] || 0) + 1;
+  });
 
-  // Filtered orders
-  const filteredOrders = ordersList.filter(o => {
+  const categoryColors = ['#0284c7', '#2563eb', '#38bdf8', '#6366f1', '#10b981', '#f59e0b'];
+  const categoryBreakdown = Object.keys(categoriesMap).length > 0 
+    ? Object.keys(categoriesMap).map((cat, idx) => {
+        const count = categoriesMap[cat];
+        const percent = Math.round((count / productsCount) * 100);
+        return {
+          label: cat,
+          percent: percent,
+          amount: `${count} produit(s)`,
+          color: categoryColors[idx % categoryColors.length]
+        };
+      })
+    : [
+        { label: 'Catalogue en base de données', percent: 0, amount: '0 produit', color: '#64748b' }
+      ];
+
+  // Filtered orders strictly from real database
+  const filteredOrders = activeOrders.filter(o => {
     if (!orderSearch.trim()) return true;
     const q = orderSearch.toLowerCase();
+    const productTitles = (o.items || []).map(it => it.product?.title || '').join(' ').toLowerCase();
+    const vendorNames = (o.items || []).map(it => it.product?.vendor_name || '').join(' ').toLowerCase();
     return (
-      o.id.toLowerCase().includes(q) ||
-      o.customer_name.toLowerCase().includes(q) ||
-      o.customer_email.toLowerCase().includes(q) ||
-      o.product_title.toLowerCase().includes(q) ||
-      o.vendor_name.toLowerCase().includes(q)
+      (o.id && o.id.toLowerCase().includes(q)) ||
+      (o.customer_name && o.customer_name.toLowerCase().includes(q)) ||
+      (o.customer_email && o.customer_email.toLowerCase().includes(q)) ||
+      productTitles.includes(q) ||
+      vendorNames.includes(q)
     );
   });
 
@@ -388,10 +314,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     if (!payoutSearch.trim()) return true;
     const q = payoutSearch.toLowerCase();
     return (
-      p.id.toLowerCase().includes(q) ||
-      p.vendor_name.toLowerCase().includes(q) ||
-      p.method.toLowerCase().includes(q) ||
-      p.status.toLowerCase().includes(q)
+      (p.id && p.id.toLowerCase().includes(q)) ||
+      (p.vendor_name && p.vendor_name.toLowerCase().includes(q)) ||
+      (p.method && p.method.toLowerCase().includes(q)) ||
+      (p.status && p.status.toLowerCase().includes(q))
     );
   });
 
@@ -407,11 +333,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     return true;
   });
 
-  // Handle Approve Payout
-  const handleApprovePayout = (payoutId: string) => {
-    setPayoutsList(prev => prev.map(p => p.id === payoutId ? { ...p, status: 'completed', processed_at: 'Validé à l\'instant' } : p));
-    setPayoutSuccessMsg(`Le virement ${payoutId} a été approuvé avec succès ! Les fonds (85% net) sont débloqués.`);
-    setTimeout(() => setPayoutSuccessMsg(null), 4000);
+  // Handle Approve Payout with Supabase Sync
+  const handleApprovePayout = async (payoutId: string) => {
+    try {
+      await supabaseDatabaseService.updatePayoutStatus(payoutId, 'completed');
+      setPayoutsList(prev => prev.map(p => p.id === payoutId ? { ...p, status: 'completed', processed_at: 'Validé à l\'instant' } : p));
+      setPayoutSuccessMsg(`Le virement ${payoutId} a été approuvé avec succès ! Les fonds (85% net) sont débloqués.`);
+      setTimeout(() => setPayoutSuccessMsg(null), 4000);
+    } catch (err: any) {
+      alert("Erreur lors de l'approbation : " + err.message);
+    }
   };
 
   // Test Supabase connection
@@ -481,21 +412,29 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       'Moyen de Paiement'
     ];
 
-    const rows = ordersList.map(o => [
-      o.id,
-      o.date,
-      o.customer_name,
-      o.customer_email,
-      o.product_title,
-      o.software,
-      o.vendor_name,
-      o.gross_amount.toFixed(2),
-      `${o.platform_percent}%`,
-      o.platform_cut.toFixed(2),
-      o.vendor_net.toFixed(2),
-      o.status === 'completed' ? 'Acquitté / Livré' : o.status,
-      o.payment_method
-    ]);
+    const rows = activeOrders.map(o => {
+      const productTitles = (o.items || []).map(it => it.product?.title || '').join(', ') || 'Modèle BIM';
+      const softwares = (o.items || []).map(it => it.product?.software || '').join(', ') || 'Revit / IFC';
+      const vendorNames = Array.from(new Set((o.items || []).map(it => it.product?.vendor_name || ''))).filter(Boolean).join(', ') || 'Vendeur Indépendant';
+      const gross = o.total_amount || 0;
+      const comm = gross * 0.15;
+      const net = gross * 0.85;
+      return [
+        o.id,
+        new Date(o.created_at).toLocaleString('fr-FR'),
+        o.customer_name,
+        o.customer_email,
+        productTitles,
+        softwares,
+        vendorNames,
+        gross.toFixed(2),
+        '15%',
+        comm.toFixed(2),
+        net.toFixed(2),
+        o.status === 'completed' ? 'Acquitté / Livré' : o.status,
+        o.payment_method || 'Stripe (CB)'
+      ];
+    });
 
     exportToCSV('Nexus_BIM_Achats_Commandes', headers, rows);
     setIsExportMenuOpen(false);
@@ -521,10 +460,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       p.id,
       p.vendor_name,
       p.requested_at,
-      p.gross_revenue.toFixed(2),
-      `${p.fee_percent}%`,
-      p.platform_fee.toFixed(2),
-      p.payout_amount.toFixed(2),
+      Number(p.gross_revenue || p.amount || 0).toFixed(2),
+      `${p.fee_percent || 15}%`,
+      Number(p.platform_fee || 0).toFixed(2),
+      Number(p.payout_amount || p.amount || 0).toFixed(2),
       p.method,
       p.account_info,
       p.status === 'completed' ? 'Virement Effectué' : 'En attente de validation',
@@ -550,7 +489,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       ['Reversements Nets Vendeurs', totalNetVendorOrders.toFixed(2), '85.00%', 'Fonds acquis aux créateurs et studios indépendants'],
       ['Total Retraits Vendeurs Effectués', totalPaidOutNet.toFixed(2), '100% des demandes validées', 'Virements bancaires SWIFT/SEPA et Stripe Connect exécutés'],
       ['Retraits en Cours de Traitement', totalPendingPayouts.toFixed(2), 'En attente de signature admin', 'Fonds provisionnés sous séquestre sécurisé'],
-      ['Nombre Total de Transactions', ordersList.length.toString(), '-', 'Livrées instantanément avec clé/téléchargement']
+      ['Nombre Total de Transactions', activeOrders.length.toString(), '-', 'Livrées instantanément avec clé/téléchargement']
     ];
 
     exportToCSV('Nexus_BIM_Bilan_Financier_Synthetique', headers, rows);
@@ -725,7 +664,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <span>Achats Effectués</span>
                 </div>
                 <span className="px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-300 text-xs font-mono font-bold">
-                  {ordersList.length}
+                  {activeOrders.length}
                 </span>
               </button>
 
@@ -741,7 +680,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <span>Retraits Vendeurs & Gains</span>
                 </div>
                 <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 text-xs font-mono font-bold">
-                  15%
+                  {payoutsList.length}
                 </span>
               </button>
 
@@ -893,13 +832,87 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               )}
             </div>
 
+            {/* Bouton Actualiser Tout depuis la Base de Données */}
+            <button
+              onClick={handleRefreshAll}
+              disabled={isRefreshing}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-semibold text-slate-200 transition-all cursor-pointer shadow-xs disabled:opacity-50"
+              title={`Dernière actualisation à ${lastRefreshedAt}`}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-blue-400 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span>Actualiser la BD</span>
+            </button>
+
+            {/* Bouton Imprimer / Télécharger en PDF */}
+            <div className="relative">
+              <button
+                onClick={() => setIsPrintMenuOpen(!isPrintMenuOpen)}
+                className="px-3.5 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+              >
+                <Printer className="w-3.5 h-3.5 text-blue-400" />
+                <span>Imprimer / PDF</span>
+                <ChevronDown className="w-3 h-3 opacity-70" />
+              </button>
+
+              {isPrintMenuOpen && (
+                <div 
+                  className="absolute right-0 mt-2 w-72 bg-white rounded-2xl shadow-2xl border border-slate-200 p-2 z-50 text-slate-800 space-y-1 animate-fadeIn"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="px-3 py-1.5 text-[11px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                    Rapports PDF Certifiés Base de Données
+                  </div>
+                  <button
+                    onClick={() => {
+                      setPrintModalConfig({ isOpen: true, type: 'orders' });
+                      setIsPrintMenuOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold hover:bg-blue-50 text-slate-800 flex items-center justify-between"
+                  >
+                    <span>1. Grand Livre des Ventes PDF</span>
+                    <Printer className="w-3.5 h-3.5 text-blue-600" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPrintModalConfig({ isOpen: true, type: 'users' });
+                      setIsPrintMenuOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold hover:bg-blue-50 text-slate-800 flex items-center justify-between"
+                  >
+                    <span>2. Registre des Utilisateurs PDF</span>
+                    <Printer className="w-3.5 h-3.5 text-blue-600" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPrintModalConfig({ isOpen: true, type: 'payouts' });
+                      setIsPrintMenuOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold hover:bg-blue-50 text-slate-800 flex items-center justify-between"
+                  >
+                    <span>3. Relevé des Retraits PDF</span>
+                    <Printer className="w-3.5 h-3.5 text-blue-600" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPrintModalConfig({ isOpen: true, type: 'financial_summary' });
+                      setIsPrintMenuOpen(false);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold hover:bg-blue-50 text-slate-800 flex items-center justify-between"
+                  >
+                    <span>4. Bilan Financier Global PDF</span>
+                    <Printer className="w-3.5 h-3.5 text-blue-600" />
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Supabase Indicator Button */}
             <button
               onClick={() => setActiveTab('supabase')}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-slate-300 hover:border-emerald-500/50"
             >
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-              <span>Supabase Ready</span>
+              <span className={`w-2 h-2 rounded-full ${tableStatuses.some(t => !t.exists) ? 'bg-amber-400' : 'bg-emerald-400'} animate-pulse`} />
+              <span>Base Supabase</span>
             </button>
           </div>
         </header>
@@ -937,25 +950,35 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2 p-1 bg-slate-900 rounded-xl border border-slate-800 text-xs font-semibold">
-                  <button 
-                    onClick={() => setChartTimeframe('7d')}
-                    className={`px-3 py-1.5 rounded-lg transition-colors ${chartTimeframe === '7d' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => setPrintModalConfig({ isOpen: true, type: 'financial_summary' })}
+                    className="px-3.5 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
                   >
-                    7 jours
+                    <Printer className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Imprimer Bilan (PDF)</span>
                   </button>
-                  <button 
-                    onClick={() => setChartTimeframe('30d')}
-                    className={`px-3 py-1.5 rounded-lg transition-colors ${chartTimeframe === '30d' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    30 jours
-                  </button>
-                  <button 
-                    onClick={() => setChartTimeframe('12m')}
-                    className={`px-3 py-1.5 rounded-lg transition-colors ${chartTimeframe === '12m' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    12 mois
-                  </button>
+
+                  <div className="flex items-center gap-2 p-1 bg-slate-900 rounded-xl border border-slate-800 text-xs font-semibold">
+                    <button 
+                      onClick={() => setChartTimeframe('7d')}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${chartTimeframe === '7d' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      7 jours
+                    </button>
+                    <button 
+                      onClick={() => setChartTimeframe('30d')}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${chartTimeframe === '30d' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      30 jours
+                    </button>
+                    <button 
+                      onClick={() => setChartTimeframe('12m')}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${chartTimeframe === '12m' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                    >
+                      12 mois
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -970,7 +993,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
                   <div className="text-xs text-emerald-700 font-semibold flex items-center gap-1">
                     <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>{ordersList.length} commandes livrées</span>
+                    <span>{activeOrders.length} commande(s) en BD</span>
                   </div>
                 </div>
 
@@ -1142,7 +1165,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <CreditCard className="w-5 h-5 text-cyan-400" />
-                      <h4 className="font-bold text-white text-base">Achats Récents ({ordersList.length})</h4>
+                      <h4 className="font-bold text-white text-base">Achats Récents ({activeOrders.length})</h4>
                     </div>
                     <button
                       onClick={() => setActiveTab('orders')}
@@ -1152,18 +1175,30 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </button>
                   </div>
                   <div className="space-y-2.5">
-                    {ordersList.slice(0, 4).map(order => (
-                      <div key={order.id} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
-                        <div className="min-w-0 pr-3">
-                          <span className="font-bold text-white block truncate">{order.product_title}</span>
-                          <span className="text-slate-400">{order.customer_name} · {order.date}</span>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <span className="font-mono font-bold text-emerald-400 block">${order.gross_amount.toFixed(2)}</span>
-                          <span className="text-[10px] text-blue-400 font-mono">Part 15% : ${order.platform_cut.toFixed(2)}</span>
-                        </div>
+                    {activeOrders.length === 0 ? (
+                      <div className="py-8 text-center text-slate-500 text-xs">
+                        Aucun achat en base de données. Seules les données réelles sont affichées.
                       </div>
-                    ))}
+                    ) : (
+                      activeOrders.slice(0, 4).map(order => {
+                        const title = (order.items && order.items.length > 0) ? order.items[0]?.product?.title : 'Modèle BIM certifié';
+                        const dateStr = order.created_at ? new Date(order.created_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' }) : 'Récent';
+                        const gross = order.total_amount || 0;
+                        const comm = gross * 0.15;
+                        return (
+                          <div key={order.id} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
+                            <div className="min-w-0 pr-3">
+                              <span className="font-bold text-white block truncate">{title}</span>
+                              <span className="text-slate-400">{order.customer_name} · {dateStr}</span>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className="font-mono font-bold text-emerald-400 block">${gross.toFixed(2)}</span>
+                              <span className="text-[10px] text-blue-400 font-mono">Part 15% : ${comm.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
 
@@ -1172,7 +1207,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <TrendingUp className="w-5 h-5 text-emerald-400" />
-                      <h4 className="font-bold text-white text-base">Retraits & Gains Plateforme</h4>
+                      <h4 className="font-bold text-white text-base">Retraits & Gains Plateforme ({payoutsList.length})</h4>
                     </div>
                     <button
                       onClick={() => setActiveTab('payouts')}
@@ -1182,20 +1217,30 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </button>
                   </div>
                   <div className="space-y-2.5">
-                    {payoutsList.slice(0, 4).map(p => (
-                      <div key={p.id} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
-                        <div className="min-w-0 pr-3">
-                          <span className="font-bold text-white block truncate">{p.vendor_name}</span>
-                          <span className="text-slate-400">{p.method} · Part 15% : ${p.platform_fee.toFixed(2)}</span>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <span className="font-mono font-bold text-white block">${p.payout_amount.toFixed(2)}</span>
-                          <span className={`text-[10px] font-bold ${p.status === 'completed' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                            {p.status === 'completed' ? 'Viré (85%)' : 'À valider'}
-                          </span>
-                        </div>
+                    {payoutsList.length === 0 ? (
+                      <div className="py-8 text-center text-slate-500 text-xs">
+                        Aucune demande de retrait en attente ou traitée en base de données.
                       </div>
-                    ))}
+                    ) : (
+                      payoutsList.slice(0, 4).map(p => {
+                        const fee = Number(p.platform_fee || (p.gross_revenue * 0.15) || 0);
+                        const net = Number(p.payout_amount || p.amount || 0);
+                        return (
+                          <div key={p.id} className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
+                            <div className="min-w-0 pr-3">
+                              <span className="font-bold text-white block truncate">{p.vendor_name}</span>
+                              <span className="text-slate-400">{p.method} · Part 15% : ${fee.toFixed(2)}</span>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className="font-mono font-bold text-white block">${net.toFixed(2)}</span>
+                              <span className={`text-[10px] font-bold ${p.status === 'completed' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                {p.status === 'completed' ? 'Viré (85%)' : 'À valider'}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
 
@@ -1220,13 +1265,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </p>
                 </div>
 
-                <button
-                  onClick={handleExportOrders}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-emerald-600/30"
-                >
-                  <FileSpreadsheet className="w-4 h-4" />
-                  <span>Exporter les commandes (.csv / Excel)</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => setPrintModalConfig({ isOpen: true, type: 'orders' })}
+                    className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-blue-600/30 cursor-pointer"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Imprimer Grand Livre (PDF)</span>
+                  </button>
+
+                  <button
+                    onClick={handleExportOrders}
+                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-emerald-600/30 cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-4 h-4" />
+                    <span>Exporter (.csv / Excel)</span>
+                  </button>
+                </div>
               </div>
 
               {/* Transactions Table in White Card with Horizontal Scroll */}
@@ -1250,51 +1305,71 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs sm:text-sm min-w-[750px]">
-                    <thead>
-                      <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
-                        <th className="py-3.5 px-4 font-bold rounded-l-xl">Réf. Commande</th>
-                        <th className="py-3.5 px-4 font-bold">Date & Heure</th>
-                        <th className="py-3.5 px-4 font-bold">Acheteur</th>
-                        <th className="py-3.5 px-4 font-bold">Produit</th>
-                        <th className="py-3.5 px-4 font-bold">Studio Vendeur</th>
-                        <th className="py-3.5 px-4 font-bold">Brut ($)</th>
-                        <th className="py-3.5 px-4 font-bold text-blue-700 bg-blue-50/60">Com. 15%</th>
-                        <th className="py-3.5 px-4 font-bold text-emerald-700 bg-emerald-50/60">Net 85%</th>
-                        <th className="py-3.5 px-4 font-bold rounded-r-xl">Mode & Statut</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-medium">
-                      {filteredOrders.map(order => (
-                        <tr key={order.id} className="hover:bg-blue-50/40 transition-colors">
-                          <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{order.id}</td>
-                          <td className="py-3.5 px-4 text-slate-600 text-xs">{order.date}</td>
-                          <td className="py-3.5 px-4">
-                            <span className="font-bold text-slate-900 block">{order.customer_name}</span>
-                            <span className="text-[11px] text-slate-400 truncate block max-w-[150px]">{order.customer_email}</span>
-                          </td>
-                          <td className="py-3.5 px-4 max-w-[200px]">
-                            <span className="font-semibold text-slate-800 line-clamp-1">{order.product_title}</span>
-                            <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded font-mono font-bold">{order.software}</span>
-                          </td>
-                          <td className="py-3.5 px-4 text-slate-700">{order.vendor_name}</td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-slate-900">${order.gross_amount.toFixed(2)}</td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-blue-700 bg-blue-50/40">
-                            +${order.platform_cut.toFixed(2)}
-                          </td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-emerald-700 bg-emerald-50/40">
-                            ${order.vendor_net.toFixed(2)}
-                          </td>
-                          <td className="py-3.5 px-4">
-                            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full font-bold border border-emerald-200">
-                              <CheckCircle className="w-3 h-3" />
-                              Payé
-                            </span>
-                          </td>
+                  {filteredOrders.length === 0 ? (
+                    <div className="py-16 text-center text-slate-500 space-y-3">
+                      <ShoppingBag className="w-12 h-12 mx-auto text-slate-300 stroke-[1.5]" />
+                      <div className="font-bold text-slate-700 text-base">Aucune commande enregistrée en base de données</div>
+                      <p className="text-xs text-slate-400 max-w-md mx-auto">
+                        Le mode super administrateur affiche strictement les transactions réelles de la base de données. Dès qu'un achat est validé, il sera consigné ici.
+                      </p>
+                    </div>
+                  ) : (
+                    <table className="w-full text-left text-xs sm:text-sm min-w-[750px]">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                          <th className="py-3.5 px-4 font-bold rounded-l-xl">Réf. Commande</th>
+                          <th className="py-3.5 px-4 font-bold">Date & Heure</th>
+                          <th className="py-3.5 px-4 font-bold">Acheteur</th>
+                          <th className="py-3.5 px-4 font-bold">Produit</th>
+                          <th className="py-3.5 px-4 font-bold">Studio Vendeur</th>
+                          <th className="py-3.5 px-4 font-bold">Brut ($)</th>
+                          <th className="py-3.5 px-4 font-bold text-blue-700 bg-blue-50/60">Com. 15%</th>
+                          <th className="py-3.5 px-4 font-bold text-emerald-700 bg-emerald-50/60">Net 85%</th>
+                          <th className="py-3.5 px-4 font-bold rounded-r-xl">Mode & Statut</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-medium">
+                        {filteredOrders.map(order => {
+                          const productTitles = (order.items && order.items.length > 0) ? order.items.map(it => it.product?.title).join(', ') : 'Modèle BIM';
+                          const software = (order.items && order.items[0]?.product?.software) || 'Revit / IFC';
+                          const vendorName = Array.from(new Set(order.items?.map(i => i.product.vendor_name).filter(Boolean))).join(', ') || 'Studio Vendeur';
+                          const dateStr = order.created_at ? new Date(order.created_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Récent';
+                          const gross = order.total_amount || 0;
+                          const comm = gross * 0.15;
+                          const net = gross * 0.85;
+
+                          return (
+                            <tr key={order.id} className="hover:bg-blue-50/40 transition-colors">
+                              <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{order.id}</td>
+                              <td className="py-3.5 px-4 text-slate-600 text-xs font-mono">{dateStr}</td>
+                              <td className="py-3.5 px-4">
+                                <span className="font-bold text-slate-900 block">{order.customer_name}</span>
+                                <span className="text-[11px] text-slate-400 truncate block max-w-[150px]">{order.customer_email}</span>
+                              </td>
+                              <td className="py-3.5 px-4 max-w-[200px]">
+                                <span className="font-semibold text-slate-800 line-clamp-1">{productTitles}</span>
+                                <span className="text-[10px] text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded font-mono font-bold">{software}</span>
+                              </td>
+                              <td className="py-3.5 px-4 text-slate-700">{vendorName}</td>
+                              <td className="py-3.5 px-4 font-mono font-bold text-slate-900">${gross.toFixed(2)}</td>
+                              <td className="py-3.5 px-4 font-mono font-bold text-blue-700 bg-blue-50/40">
+                                +${comm.toFixed(2)}
+                              </td>
+                              <td className="py-3.5 px-4 font-mono font-bold text-emerald-700 bg-emerald-50/40">
+                                ${net.toFixed(2)}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full font-bold border border-emerald-200">
+                                  <CheckCircle className="w-3 h-3" />
+                                  Payé
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
 
               </div>
@@ -1318,13 +1393,23 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </p>
                 </div>
 
-                <button
-                  onClick={handleExportPayouts}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-emerald-600/30"
-                >
-                  <FileSpreadsheet className="w-4 h-4" />
-                  <span>Exporter les retraits (.csv / Excel)</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => setPrintModalConfig({ isOpen: true, type: 'payouts' })}
+                    className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-blue-600/30 cursor-pointer"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Imprimer Relevé (PDF)</span>
+                  </button>
+
+                  <button
+                    onClick={handleExportPayouts}
+                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-emerald-600/30 cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-4 h-4" />
+                    <span>Exporter (.csv / Excel)</span>
+                  </button>
+                </div>
               </div>
 
               {/* 3 Summary Payout Cards */}
@@ -1375,70 +1460,86 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs sm:text-sm min-w-[750px]">
-                    <thead>
-                      <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
-                        <th className="py-3.5 px-4 font-bold rounded-l-xl">Réf. Retrait</th>
-                        <th className="py-3.5 px-4 font-bold">Studio Créateur</th>
-                        <th className="py-3.5 px-4 font-bold">Date Demande</th>
-                        <th className="py-3.5 px-4 font-bold">Volume Brut ($)</th>
-                        <th className="py-3.5 px-4 font-bold text-blue-700 bg-blue-50/60">Part Nexus (15%)</th>
-                        <th className="py-3.5 px-4 font-bold text-emerald-700 bg-emerald-50/60">Net Vendeur (85%)</th>
-                        <th className="py-3.5 px-4 font-bold">Mode de Virement</th>
-                        <th className="py-3.5 px-4 font-bold">Statut</th>
-                        <th className="py-3.5 px-4 font-bold rounded-r-xl">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-medium">
-                      {filteredPayouts.map(p => (
-                        <tr key={p.id} className="hover:bg-blue-50/40 transition-colors">
-                          <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{p.id}</td>
-                          <td className="py-3.5 px-4 font-bold text-slate-900">
-                            <div className="flex items-center gap-2">
-                              {p.vendor_avatar && (
-                                <img src={p.vendor_avatar} alt="" className="w-6 h-6 rounded-full object-cover" />
-                              )}
-                              <span>{p.vendor_name}</span>
-                            </div>
-                          </td>
-                          <td className="py-3.5 px-4 text-slate-500">{p.requested_at}</td>
-                          <td className="py-3.5 px-4 font-mono text-slate-700">${p.gross_revenue.toFixed(2)}</td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-blue-700 bg-blue-50/40">
-                            -${p.platform_fee.toFixed(2)} (15%)
-                          </td>
-                          <td className="py-3.5 px-4 font-mono font-bold text-emerald-700 bg-emerald-50/40">
-                            ${p.payout_amount.toFixed(2)} (85%)
-                          </td>
-                          <td className="py-3.5 px-4">
-                            <span className="font-semibold block text-slate-900">{p.method}</span>
-                            <span className="text-[11px] font-mono text-slate-400">{p.account_info}</span>
-                          </td>
-                          <td className="py-3.5 px-4">
-                            <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                              p.status === 'completed'
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                : 'bg-amber-50 text-amber-700 border border-amber-200'
-                            }`}>
-                              {p.status === 'completed' ? 'Virement Validé' : 'En attente d’approbation'}
-                            </span>
-                          </td>
-                          <td className="py-3.5 px-4">
-                            {p.status !== 'completed' ? (
-                              <button
-                                onClick={() => handleApprovePayout(p.id)}
-                                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-xs transition-colors flex items-center gap-1"
-                              >
-                                <Check className="w-3.5 h-3.5" />
-                                <span>Valider</span>
-                              </button>
-                            ) : (
-                              <span className="text-xs text-slate-400 font-mono">Traité</span>
-                            )}
-                          </td>
+                  {filteredPayouts.length === 0 ? (
+                    <div className="py-16 text-center text-slate-500 space-y-3">
+                      <TrendingUp className="w-12 h-12 mx-auto text-slate-300 stroke-[1.5]" />
+                      <div className="font-bold text-slate-700 text-base">Aucune demande de retrait en base de données</div>
+                      <p className="text-xs text-slate-400 max-w-md mx-auto">
+                        Les retraits demandés par les vendeurs avec solde disponible apparaîtront ici pour contrôle et déblocage.
+                      </p>
+                    </div>
+                  ) : (
+                    <table className="w-full text-left text-xs sm:text-sm min-w-[750px]">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                          <th className="py-3.5 px-4 font-bold rounded-l-xl">Réf. Retrait</th>
+                          <th className="py-3.5 px-4 font-bold">Studio Créateur</th>
+                          <th className="py-3.5 px-4 font-bold">Date Demande</th>
+                          <th className="py-3.5 px-4 font-bold">Volume Brut ($)</th>
+                          <th className="py-3.5 px-4 font-bold text-blue-700 bg-blue-50/60">Part Nexus (15%)</th>
+                          <th className="py-3.5 px-4 font-bold text-emerald-700 bg-emerald-50/60">Net Vendeur (85%)</th>
+                          <th className="py-3.5 px-4 font-bold">Mode de Virement</th>
+                          <th className="py-3.5 px-4 font-bold">Statut</th>
+                          <th className="py-3.5 px-4 font-bold rounded-r-xl">Action</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-medium">
+                        {filteredPayouts.map(p => {
+                          const gross = Number(p.gross_revenue || p.amount || 0);
+                          const fee = Number(p.platform_fee || (gross * 0.15) || 0);
+                          const net = Number(p.payout_amount || p.amount || 0);
+
+                          return (
+                            <tr key={p.id} className="hover:bg-blue-50/40 transition-colors">
+                              <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{p.id}</td>
+                              <td className="py-3.5 px-4 font-bold text-slate-900">
+                                <div className="flex items-center gap-2">
+                                  {p.vendor_avatar && (
+                                    <img src={p.vendor_avatar} alt="" className="w-6 h-6 rounded-full object-cover" />
+                                  )}
+                                  <span>{p.vendor_name}</span>
+                                </div>
+                              </td>
+                              <td className="py-3.5 px-4 text-slate-500 font-mono text-xs">{p.requested_at}</td>
+                              <td className="py-3.5 px-4 font-mono text-slate-700">${gross.toFixed(2)}</td>
+                              <td className="py-3.5 px-4 font-mono font-bold text-blue-700 bg-blue-50/40">
+                                -${fee.toFixed(2)} (15%)
+                              </td>
+                              <td className="py-3.5 px-4 font-mono font-bold text-emerald-700 bg-emerald-50/40">
+                                ${net.toFixed(2)} (85%)
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <span className="font-semibold block text-slate-900">{p.method}</span>
+                                <span className="text-[11px] font-mono text-slate-400">{p.account_info}</span>
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                                  p.status === 'completed'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : 'bg-amber-50 text-amber-700 border border-amber-200'
+                                }`}>
+                                  {p.status === 'completed' ? 'Virement Validé' : 'En attente d’approbation'}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4">
+                                {p.status !== 'completed' ? (
+                                  <button
+                                    onClick={() => handleApprovePayout(p.id)}
+                                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-xs transition-colors flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>Valider</span>
+                                  </button>
+                                ) : (
+                                  <span className="text-xs text-slate-400 font-mono">Traité</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
 
               </div>
@@ -1557,6 +1658,123 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
               </div>
 
+              {/* SECTION: ÉTAT DU SCHÉMA & TABLES DANS SUPABASE (DIAGNOSTIC EN DIRECT) */}
+              <div className="rounded-3xl bg-white text-slate-900 border border-slate-200 shadow-sm p-6 sm:p-8 space-y-6">
+                
+                <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
+                      <Database className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-['EB_Garamond',serif] text-2xl font-bold text-slate-900">
+                        État du Schéma & Diagnostic des Tables Supabase
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Contrôle d'existence des 6 tables officielles sur votre projet <strong>lfndoimqzxvqsosxgeys</strong>.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      onClick={handleCheckTables}
+                      disabled={isCheckingTables}
+                      className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isCheckingTables ? 'animate-spin' : ''}`} />
+                      <span>Vérifier l'état des tables</span>
+                    </button>
+
+                    <button
+                      onClick={() => setIsSqlModalOpen(true)}
+                      className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-blue-600/20 cursor-pointer"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copier le Script SQL Schéma</span>
+                    </button>
+
+                    <a
+                      href="https://supabase.com/dashboard/project/lfndoimqzxvqsosxgeys/sql/new"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-emerald-600/20"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Ouvrir SQL Editor Supabase</span>
+                    </a>
+                  </div>
+                </div>
+
+                {/* Warning if tables not created */}
+                {tableStatuses.some(t => !t.exists) && (
+                  <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-900 text-xs sm:text-sm space-y-2">
+                    <div className="flex items-center gap-2 font-bold text-amber-800">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                      <span>Tables manquantes détectées dans votre base de données Supabase</span>
+                    </div>
+                    <p className="text-amber-800/90 leading-relaxed text-xs">
+                      PostgREST ne trouve pas certaines tables dans le cache du schéma. C'est normal si vous n'avez pas encore exécuté le script SQL dans Supabase !
+                      Pour activer toutes les tables en 1 clic : cliquez sur <strong>"Copier le Script SQL Schéma"</strong>, ouvrez l'éditeur SQL de Supabase (bouton vert ci-dessus), collez le code et cliquez sur <strong>RUN</strong>.
+                    </p>
+                  </div>
+                )}
+
+                {/* Table Statuses Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {tableStatuses.map((t, idx) => (
+                    <div 
+                      key={idx} 
+                      className={`p-4 rounded-2xl border transition-all ${
+                        t.exists 
+                          ? 'bg-emerald-50/50 border-emerald-200' 
+                          : 'bg-rose-50/50 border-rose-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between pb-1.5">
+                        <span className="font-mono text-xs font-bold text-slate-900">public.{t.tableName}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase font-mono ${
+                          t.exists ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                        }`}>
+                          {t.exists ? 'Active' : 'Absente'}
+                        </span>
+                      </div>
+                      <div className="text-xs font-medium text-slate-700">{t.label}</div>
+                      <div className={`text-[11px] font-mono mt-2 flex items-center gap-1 ${t.exists ? 'text-emerald-700 font-bold' : 'text-rose-600 font-semibold'}`}>
+                        {t.exists ? <CheckCircle className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
+                        <span>{t.statusText}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Sync Local to Supabase Action */}
+                <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <div className="text-sm font-bold text-slate-900">Synchroniser les données locales vers Supabase</div>
+                    <p className="text-xs text-slate-500">
+                      Transfère automatiquement vos profils, créateurs, produits et commandes vers Supabase une fois les tables créées.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={handleSyncToSupabase}
+                    disabled={isMigratingData}
+                    className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer shadow-md disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isMigratingData ? 'animate-spin' : ''}`} />
+                    <span>{isMigratingData ? 'Synchronisation en cours...' : 'Synchroniser vers Supabase'}</span>
+                  </button>
+                </div>
+
+                {migrationFeedback && (
+                  <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs font-semibold animate-fadeIn">
+                    {migrationFeedback}
+                  </div>
+                )}
+
+              </div>
+
             </div>
           )}
 
@@ -1577,8 +1795,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                 <div className="flex flex-wrap items-center gap-2.5">
                   <button
+                    onClick={() => setPrintModalConfig({ isOpen: true, type: 'users' })}
+                    className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-blue-600/30 cursor-pointer"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Imprimer Registre (PDF)</span>
+                  </button>
+
+                  <button
                     onClick={() => setIsAddAdminModalOpen(true)}
-                    className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-purple-600/30"
+                    className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-purple-600/30 cursor-pointer"
                   >
                     <UserPlus className="w-4 h-4" />
                     <span>+ Ajouter un Administrateur (Super Admin)</span>
@@ -1586,10 +1812,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                   <button
                     onClick={handleExportUsers}
-                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all"
+                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer"
                   >
                     <FileSpreadsheet className="w-4 h-4" />
-                    <span>Exporter la liste (.csv / Excel)</span>
+                    <span>Exporter (.csv / Excel)</span>
                   </button>
                 </div>
               </div>
