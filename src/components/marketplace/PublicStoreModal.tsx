@@ -18,7 +18,11 @@ import {
   Cpu,
   Key,
   Video,
-  Share2
+  Share2,
+  MapPin,
+  Phone,
+  MessageCircle,
+  Mail
 } from 'lucide-react';
 import { Product, VendorStoreSettings, ProductType } from '../../types/database';
 
@@ -192,8 +196,49 @@ export const PublicStoreModal: React.FC<PublicStoreModalProps> = ({
           </div>
 
           {/* Bio */}
-          <div className="text-xs sm:text-sm text-slate-300 bg-slate-900/60 p-4 sm:p-5 rounded-2xl border border-slate-800/80 leading-relaxed">
-            {settings.bio || `Bienvenue sur la boutique officielle de ${vendorName}. Retrouvez nos familles Revit paramétriques, gabarits et scripts Dynamo prêts pour la production.`}
+          <div className="text-xs sm:text-sm text-slate-300 bg-slate-900/60 p-4 sm:p-5 rounded-2xl border border-slate-800/80 leading-relaxed space-y-3">
+            <p>{settings.bio || `Bienvenue sur la boutique officielle de ${vendorName}. Retrouvez nos familles Revit paramétriques, gabarits et scripts Dynamo prêts pour la production.`}</p>
+            
+            {/* Contact details */}
+            {(settings.address || settings.phone || settings.whatsapp || settings.contact_email) && (
+              <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center gap-2.5 text-xs">
+                {settings.address && (
+                  <div className="flex items-center gap-1.5 text-slate-300 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+                    <MapPin className="w-3.5 h-3.5 text-blue-400" />
+                    <span>{settings.address}</span>
+                  </div>
+                )}
+                {settings.phone && (
+                  <a 
+                    href={`tel:${settings.phone}`}
+                    className="flex items-center gap-1.5 text-slate-300 hover:text-white bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800 transition-colors"
+                  >
+                    <Phone className="w-3.5 h-3.5 text-slate-400" />
+                    <span>{settings.phone}</span>
+                  </a>
+                )}
+                {settings.whatsapp && (
+                  <a 
+                    href={`https://wa.me/${settings.whatsapp.replace(/[^0-9]/g, '')}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-emerald-400 font-bold bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg border border-emerald-500/30 transition-colors"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>WhatsApp</span>
+                  </a>
+                )}
+                {settings.contact_email && (
+                  <a 
+                    href={`mailto:${settings.contact_email}`}
+                    className="flex items-center gap-1.5 text-blue-300 hover:text-white bg-blue-500/10 hover:bg-blue-500/20 px-2.5 py-1 rounded-lg border border-blue-500/30 transition-colors"
+                  >
+                    <Mail className="w-3.5 h-3.5 text-blue-400" />
+                    <span>{settings.contact_email}</span>
+                  </a>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Filter & Search Bar */}

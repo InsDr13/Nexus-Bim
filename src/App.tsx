@@ -37,8 +37,11 @@ export default function App() {
   // Navigation & Active View (Landing page as default Accueil)
   const [currentView, setCurrentView] = useState<ActiveAppView>('landing');
 
-  // APP MODE : 'real' (Supabase live database) vs 'demo' (mock dataset)
-  const [appMode, setAppModeState] = useState<'real' | 'demo'>(() => getAppMode());
+  // APP MODE : AU lancement de l'application, on est déjà en mode réel par défaut
+  const [appMode, setAppModeState] = useState<'real' | 'demo'>(() => {
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('nexus_app_mode') : null;
+    return saved === 'demo' ? 'demo' : 'real';
+  });
 
   // AUTH STATE : current authenticated profile
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => supabaseAuthService.getCurrentUser());
@@ -51,67 +54,41 @@ export default function App() {
 
   // Products state (separating real mode vs demo mode - Real starts EMPTY as requested)
   const [products, setProducts] = useState<Product[]>(() => {
-    const mode = getAppMode();
-    if (mode === 'real') {
-      const saved = localStorage.getItem('nexus_real_products');
-      if (saved) {
-        try { return JSON.parse(saved); } catch {}
-      }
-      return []; // Start EMPTY in real mode: no vendor has published yet
-    } else {
-      const saved = localStorage.getItem('nexus_demo_products');
-      if (saved) {
-        try { return JSON.parse(saved); } catch {}
-      }
-      return INITIAL_PRODUCTS;
+    const saved = localStorage.getItem('nexus_real_products');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
     }
+    return []; // En mode réel: catalogue commence propre
   });
 
   // Orders state (Real starts EMPTY as requested)
   const [orders, setOrders] = useState<Order[]>(() => {
-    const mode = getAppMode();
-    if (mode === 'real') {
-      const saved = localStorage.getItem('nexus_real_orders');
-      if (saved) {
-        try { return JSON.parse(saved); } catch {}
-      }
-      return []; // Start EMPTY in real mode: no purchases yet
-    } else {
-      const saved = localStorage.getItem('nexus_demo_orders');
-      if (saved) {
-        try { return JSON.parse(saved); } catch {}
-      }
-      return INITIAL_ORDERS;
+    const saved = localStorage.getItem('nexus_real_orders');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
     }
+    return []; // En mode réel: commence propre
   });
 
-  // Users state (Real has only default Super Admin initially)
+  // Users state (Real has default Super Admin pré-configuré: login superadmin / superadmin)
   const [users, setUsers] = useState<UserProfile[]>(() => {
-    const mode = getAppMode();
-    if (mode === 'real') {
-      const saved = localStorage.getItem('nexus_real_profiles');
-      if (saved) {
-        try { return JSON.parse(saved); } catch {}
-      }
-      return [{
-        id: 'usr_super_admin',
-        email: 'admin@nexusbim.com',
-        name: 'Super Administrateur',
-        role: 'super_admin',
-        is_super_admin: true,
-        company: 'Nexus BIM Core',
-        specialty: 'Administration & Sécurité',
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
-        status: 'active',
-        created_at: new Date().toISOString()
-      }];
-    } else {
-      const saved = localStorage.getItem('nexus_demo_users');
-      if (saved) {
-        try { return JSON.parse(saved); } catch {}
-      }
-      return INITIAL_USERS;
+    const saved = localStorage.getItem('nexus_real_profiles');
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
     }
+    return [{
+      id: 'usr_super_admin',
+      username: 'superadmin',
+      email: 'superadmin@nexusbim.com',
+      name: 'Super Administrateur',
+      role: 'super_admin',
+      is_super_admin: true,
+      company: 'Nexus BIM Core',
+      specialty: 'Direction & Sécurité Plateforme',
+      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
+      status: 'active',
+      created_at: '2026-01-01T00:00:00Z'
+    }];
   });
 
   // Vendor Store settings

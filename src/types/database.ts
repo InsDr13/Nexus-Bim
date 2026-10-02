@@ -41,6 +41,7 @@ export type ProductCategory =
 
 export interface UserProfile {
   id: string;
+  username?: string;
   email: string;
   name: string;
   role: UserRole;
@@ -49,6 +50,10 @@ export interface UserProfile {
   specialty?: string;
   bio?: string;
   store_slug?: string;
+  phone?: string;
+  whatsapp?: string;
+  address?: string;
+  contact_email?: string;
   is_super_admin?: boolean;
   status: 'active' | 'suspended' | 'pending';
   created_at: string;
@@ -131,6 +136,10 @@ export interface VendorStoreSettings {
   banner_url: string;
   logo_url: string;
   primary_color: string;
+  phone?: string;
+  whatsapp?: string;
+  address?: string;
+  contact_email?: string;
   website_url?: string;
   linkedin_url?: string;
   followers_count: number;

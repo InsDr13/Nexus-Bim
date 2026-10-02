@@ -95,7 +95,7 @@ export const RoleSwitcher: React.FC<RoleSwitcherProps> = ({
         </div>
 
         {/* Center: Navigation Selector for Views */}
-        <div className="flex items-center gap-1.5 p-1 bg-slate-900/90 rounded-2xl border border-slate-800 overflow-x-auto scrollbar-none">
+        <div className="flex items-center gap-1.5 p-1 bg-slate-900/90 rounded-2xl border border-slate-800 overflow-x-auto scrollbar-none font-['Plus_Jakarta_Sans',sans-serif]">
           
           {/* Landing Page */}
           <button
@@ -123,44 +123,94 @@ export const RoleSwitcher: React.FC<RoleSwitcherProps> = ({
             <span>Marketplace</span>
           </button>
 
-          {/* Menu Client */}
-          <button
-            onClick={() => onViewChange('customer')}
-            className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
-              currentView === 'customer'
-                ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <ShoppingBag className="w-4 h-4" />
-            <span>Menu Client</span>
-          </button>
+          {/* EN MODE RÉEL : Visibilité strictement conditionnée par le rôle de l'utilisateur connecté */}
+          {appMode === 'real' ? (
+            <>
+              {/* Espace Client (uniquement si connecté avec rôle customer) */}
+              {currentUser && currentUser.role === 'customer' && (
+                <button
+                  onClick={() => onViewChange('customer')}
+                  className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
+                    currentView === 'customer'
+                      ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-bold'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                  }`}
+                >
+                  <ShoppingBag className="w-4 h-4 text-emerald-400" />
+                  <span>Mes Achats & Téléchargements</span>
+                </button>
+              )}
 
-          {/* Menu Vendeur */}
-          <button
-            onClick={() => onViewChange('vendor')}
-            className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
-              currentView === 'vendor'
-                ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <Briefcase className="w-4 h-4" />
-            <span>Menu Vendeur</span>
-          </button>
+              {/* Espace Vendeur (uniquement si connecté avec rôle vendor) */}
+              {currentUser && currentUser.role === 'vendor' && (
+                <button
+                  onClick={() => onViewChange('vendor')}
+                  className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
+                    currentView === 'vendor'
+                      ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-bold'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                  }`}
+                >
+                  <Briefcase className="w-4 h-4 text-blue-400" />
+                  <span>Mon Espace Vendeur</span>
+                </button>
+              )}
 
-          {/* Menu Administrateur */}
-          <button
-            onClick={() => onViewChange('admin')}
-            className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
-              currentView === 'admin'
-                ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <ShieldAlert className="w-4 h-4" />
-            <span>Menu Administrateur</span>
-          </button>
+              {/* Espace Administration (uniquement si connecté en tant que Super Admin ou Admin) */}
+              {currentUser && (currentUser.role === 'admin' || currentUser.role === 'super_admin' || currentUser.is_super_admin) && (
+                <button
+                  onClick={() => onViewChange('admin')}
+                  className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
+                    currentView === 'admin'
+                      ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30 font-bold'
+                      : 'text-purple-300 hover:text-white hover:bg-slate-800/80'
+                  }`}
+                >
+                  <ShieldAlert className="w-4 h-4 text-amber-400" />
+                  <span>Espace Administration</span>
+                </button>
+              )}
+            </>
+          ) : (
+            /* EN MODE DÉMO : Boutons de démonstration visibles pour tester les interfaces */
+            <>
+              <button
+                onClick={() => onViewChange('customer')}
+                className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
+                  currentView === 'customer'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                }`}
+              >
+                <ShoppingBag className="w-4 h-4" />
+                <span>Menu Client (Démo)</span>
+              </button>
+
+              <button
+                onClick={() => onViewChange('vendor')}
+                className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
+                  currentView === 'vendor'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                }`}
+              >
+                <Briefcase className="w-4 h-4" />
+                <span>Menu Vendeur (Démo)</span>
+              </button>
+
+              <button
+                onClick={() => onViewChange('admin')}
+                className={`flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
+                  currentView === 'admin'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                }`}
+              >
+                <ShieldAlert className="w-4 h-4" />
+                <span>Menu Admin (Démo)</span>
+              </button>
+            </>
+          )}
         </div>
 
         {/* Right Zone: Cart & Auth Status */}

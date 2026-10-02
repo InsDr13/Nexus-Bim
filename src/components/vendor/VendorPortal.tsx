@@ -45,7 +45,11 @@ import {
   FileSpreadsheet,
   Copy,
   Briefcase,
-  LogIn
+  LogIn,
+  Mail,
+  Phone,
+  MapPin,
+  MessageCircle
 } from 'lucide-react';
 import { Product, VendorStoreSettings, PayoutTransaction, ProductType, UserProfile, Order } from '../../types/database';
 import { INITIAL_PAYOUTS } from '../../data/mockData';
@@ -84,7 +88,7 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
   onViewVendorStore,
   onUserAuthenticated,
 }) => {
-  const [activeMenu, setActiveMenu] = useState<'dashboard' | 'products' | 'revenue' | 'store' | 'orders' | 'stats' | 'reviews'>('dashboard');
+  const [activeMenu, setActiveMenu] = useState<'dashboard' | 'products' | 'revenue' | 'store' | 'orders' | 'clients' | 'stats' | 'reviews'>('dashboard');
   const [productTab, setProductTab] = useState<'all' | 'published' | 'draft' | 'pending'>('all');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [productSearch, setProductSearch] = useState('');
@@ -92,6 +96,7 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
   const [savedSettingsFeedback, setSavedSettingsFeedback] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState(false);
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
 
   // Active vendor info
   const currentVendorSlug = currentUser?.store_slug || 'studioarch-atelier';
@@ -140,11 +145,83 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
   );
   const [payoutSuccessMsg, setPayoutSuccessMsg] = useState(false);
 
-  // Store customization form state
-  const [storeName, setStoreName] = useState(storeSettings.store_name);
+  // Store customization & additional vendor contact form state
+  const [storeName, setStoreName] = useState(currentUser?.company || storeSettings.store_name);
   const [tagline, setTagline] = useState(storeSettings.tagline);
-  const [bio, setBio] = useState(storeSettings.bio);
-  const [primaryColor, setPrimaryColor] = useState(storeSettings.primary_color);
+  const [bio, setBio] = useState(currentUser?.bio || storeSettings.bio);
+  const [logoUrl, setLogoUrl] = useState(currentUser?.avatar || storeSettings.logo_url);
+  const [bannerUrl, setBannerUrl] = useState(storeSettings.banner_url || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200');
+  const [address, setAddress] = useState(currentUser?.address || storeSettings.address || '');
+  const [phone, setPhone] = useState(currentUser?.phone || storeSettings.phone || '');
+  const [whatsapp, setWhatsapp] = useState(currentUser?.whatsapp || storeSettings.whatsapp || '');
+  const [contactEmail, setContactEmail] = useState(currentUser?.contact_email || storeSettings.contact_email || currentUser?.email || '');
+  const [primaryColor, setPrimaryColor] = useState(storeSettings.primary_color || '#2563eb');
+
+  // Multi-vendeurs : Clients propres à ce vendeur
+  const vendorClients = React.useMemo(() => {
+    const map = new Map<string, {
+      id: string;
+      name: string;
+      email: string;
+      ordersCount: number;
+      totalSpent: number;
+      lastOrderDate: string;
+      products: string[];
+    }>();
+
+    vendorOrders.forEach(o => {
+      const email = o.customer_email.toLowerCase();
+      const vendorItems = o.items.filter(i => 
+        i.product.vendor_name === currentVendorName || 
+        i.product.vendor_slug === currentVendorSlug || 
+        (appMode === 'demo' && i.product.vendor_name === 'StudioArch')
+      );
+      const spent = vendorItems.reduce((acc, i) => acc + i.price, 0);
+      const titles = vendorItems.map(i => i.product.title);
+
+      if (map.has(email)) {
+        const item = map.get(email)!;
+        item.ordersCount += 1;
+        item.totalSpent += spent;
+        item.products = Array.from(new Set([...item.products, ...titles]));
+      } else {
+        map.set(email, {
+          id: o.customer_id || `cust_${Date.now()}`,
+          name: o.customer_name,
+          email: o.customer_email,
+          ordersCount: 1,
+          totalSpent: spent,
+          lastOrderDate: o.created_at,
+          products: titles
+        });
+      }
+    });
+
+    if (map.size === 0 && appMode === 'demo') {
+      return [
+        {
+          id: 'demo_c1',
+          name: 'Thomas Leroy',
+          email: 'thomas.leroy@architectes-paris.com',
+          ordersCount: 3,
+          totalSpent: 162.90,
+          lastOrderDate: '17 avr. 2025',
+          products: ['Bibliothèque de familles Revit - Escaliers', 'Mobilier 3D - Collection scandinave']
+        },
+        {
+          id: 'demo_c2',
+          name: 'Sarah Benali',
+          email: 's.benali@algerie-bim.com',
+          ordersCount: 2,
+          totalSpent: 78.90,
+          lastOrderDate: '16 avr. 2025',
+          products: ['Maison individuelle moderne (Revit)']
+        }
+      ];
+    }
+
+    return Array.from(map.values());
+  }, [vendorOrders, currentVendorName, currentVendorSlug, appMode]);
 
   const handleCopyVendorLink = (slug: string) => {
     const fullUrl = `${window.location.origin}/vendeur/${slug}`;
@@ -165,17 +242,42 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
     return true;
   });
 
-  const handleSaveStore = (e: React.FormEvent) => {
+  const handleSaveStore = async (e: React.FormEvent) => {
     e.preventDefault();
-    onUpdateStoreSettings({
+    const updatedSettings: VendorStoreSettings = {
       ...storeSettings,
       store_name: storeName,
       tagline,
       bio,
+      logo_url: logoUrl,
+      banner_url: bannerUrl,
+      address,
+      phone,
+      whatsapp,
+      contact_email: contactEmail,
       primary_color: primaryColor
-    });
+    };
+    onUpdateStoreSettings(updatedSettings);
+
+    // Synchronisation du profil vendeur complet (logo, adresse, tel, whatsapp, email)
+    if (currentUser) {
+      try {
+        await supabaseAuthService.updateUserProfile(currentUser.id, {
+          company: storeName,
+          bio,
+          avatar: logoUrl,
+          address,
+          phone,
+          whatsapp,
+          contact_email: contactEmail
+        });
+      } catch (err) {
+        console.warn('Update user profile note:', err);
+      }
+    }
+
     setSavedSettingsFeedback(true);
-    setTimeout(() => setSavedSettingsFeedback(false), 2000);
+    setTimeout(() => setSavedSettingsFeedback(false), 3000);
   };
 
   const handleConfirmWithdrawal = async (e: React.FormEvent) => {
@@ -219,8 +321,9 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
     { id: 'dashboard', label: 'Tableau de bord', icon: LayoutDashboard },
     { id: 'products', label: 'Mes produits', icon: Package, badge: vendorProducts.length },
     { id: 'revenue', label: 'Mes revenus', icon: Wallet, highlight: true },
-    { id: 'orders', label: 'Commandes', icon: ShoppingBag, badge: '48' },
-    { id: 'store', label: 'Ma boutique', icon: Store },
+    { id: 'orders', label: 'Commandes', icon: ShoppingBag, badge: vendorOrders.length || (appMode === 'demo' ? '48' : undefined) },
+    { id: 'clients', label: 'Mes clients', icon: Users, badge: vendorClients.length },
+    { id: 'store', label: 'Ma boutique & Coordonnées', icon: Store },
     { id: 'stats', label: 'Statistiques', icon: BarChart3 },
     { id: 'reviews', label: 'Avis clients', icon: Star, badge: '124' },
   ];
@@ -1041,9 +1144,9 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                               <span className="hidden sm:inline">Détails adaptés</span>
                             </button>
                             <button
-                              onClick={() => onDeleteProduct(p.id)}
-                              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"
-                              title="Supprimer"
+                              onClick={() => setProductToDelete(p)}
+                              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                              title="Supprimer définitivement"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -1061,20 +1164,108 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
         )}
 
         {/* ======================================================================= */}
-        {/* 4. MA BOUTIQUE VIEW (Fond Blanc Lumineux & Haute Lisibilité) */}
+        {/* OPTION "MES CLIENTS" (Multi-vendeurs : clients ayant commandé chez ce vendeur) */}
+        {/* ======================================================================= */}
+        {activeMenu === 'clients' && (
+          <div className="space-y-6 animate-fadeIn font-['Plus_Jakarta_Sans',sans-serif]">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Mes clients acheteurs</h1>
+                <p className="text-sm text-slate-400">
+                  Clients ayant passé commande auprès de l'atelier <strong>{currentVendorName}</strong>.
+                </p>
+              </div>
+
+              <div className="px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-emerald-400 font-bold">
+                {vendorClients.length} client(s) actif(s)
+              </div>
+            </div>
+
+            <div className="p-6 sm:p-8 rounded-3xl bg-white text-slate-900 border border-slate-200/90 shadow-sm space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <h3 className="text-base sm:text-lg font-bold text-slate-900">Portefeuille clients de votre boutique</h3>
+                <span className="text-xs font-semibold text-slate-500">Isolation multi-vendeurs garantie</span>
+              </div>
+
+              {vendorClients.length === 0 ? (
+                <div className="text-center py-16 space-y-3">
+                  <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto text-slate-400">
+                    <Users className="w-7 h-7" />
+                  </div>
+                  <h4 className="font-bold text-slate-800 text-base">Aucun client pour l'instant</h4>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                    Partagez votre lien boutique <strong>nexusbim.app/vendeur/{currentVendorSlug}</strong> pour enregistrer vos premières commandes.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs sm:text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                        <th className="py-3 px-4 font-bold rounded-l-xl">Client / Agence</th>
+                        <th className="py-3 px-4 font-bold">Email de contact</th>
+                        <th className="py-3 px-4 font-bold">Commandes passées</th>
+                        <th className="py-3 px-4 font-bold">Total dépensé ($ USD)</th>
+                        <th className="py-3 px-4 font-bold">Dernier achat</th>
+                        <th className="py-3 px-4 font-bold text-right rounded-r-xl">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-medium">
+                      {vendorClients.map((client) => (
+                        <tr key={client.email} className="hover:bg-blue-50/40 transition-colors">
+                          <td className="py-4 px-4 font-bold text-slate-900">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-9 h-9 rounded-full bg-blue-100 text-blue-700 font-bold flex items-center justify-center shrink-0">
+                                {client.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <div>{client.name}</div>
+                                <div className="text-[11px] text-slate-500 font-normal truncate max-w-xs">
+                                  {client.products.slice(0, 1).join(', ')}{client.products.length > 1 ? ` (+${client.products.length - 1})` : ''}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-4 px-4 text-slate-600 font-mono text-xs">{client.email}</td>
+                          <td className="py-4 px-4 font-mono font-bold text-slate-800">{client.ordersCount} commande(s)</td>
+                          <td className="py-4 px-4 font-mono font-bold text-emerald-700">${client.totalSpent.toFixed(2)} USD</td>
+                          <td className="py-4 px-4 text-slate-500">{client.lastOrderDate}</td>
+                          <td className="py-4 px-4 text-right">
+                            <a
+                              href={`mailto:${client.email}?subject=Suivi de commande Nexus BIM - ${currentVendorName}`}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold border border-blue-200 transition-colors"
+                            >
+                              <Mail className="w-3.5 h-3.5" />
+                              <span>Contacter</span>
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================================= */}
+        {/* 4. MA BOUTIQUE & COORDONNÉES (Informations Supplémentaires Vendeur) */}
         {/* ======================================================================= */}
         {activeMenu === 'store' && (
-          <div className="space-y-6 animate-fadeIn">
-            <div className="flex items-center justify-between">
+          <div className="space-y-6 animate-fadeIn font-['Plus_Jakarta_Sans',sans-serif]">
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Ma boutique publique</h1>
-                <p className="text-sm text-slate-400">Personnalisez votre vitrine créateur visible par tous les acheteurs.</p>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Ma boutique & Coordonnées</h1>
+                <p className="text-sm text-slate-400">
+                  Complétez votre profil vendeur : logo, bannière, adresse physique, téléphone, WhatsApp et email direct.
+                </p>
               </div>
 
               {savedSettingsFeedback && (
-                <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs sm:text-sm font-bold">
+                <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs sm:text-sm font-bold animate-fadeIn">
                   <Check className="w-4 h-4" />
-                  <span>Modifications enregistrées !</span>
+                  <span>Modifications de l'atelier enregistrées !</span>
                 </div>
               )}
             </div>
@@ -1082,30 +1273,122 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
               
               {/* Settings Form in White Card */}
-              <form onSubmit={handleSaveStore} className="lg:col-span-6 p-6 sm:p-8 rounded-3xl bg-white text-slate-900 border border-slate-200/90 shadow-sm space-y-5">
+              <form onSubmit={handleSaveStore} className="lg:col-span-7 p-6 sm:p-8 rounded-3xl bg-white text-slate-900 border border-slate-200/90 shadow-sm space-y-5">
                 
-                <div className="space-y-1.5">
-                  <label className="text-xs sm:text-sm font-bold text-slate-800">Nom de la boutique</label>
-                  <input
-                    type="text"
-                    value={storeName}
-                    onChange={(e) => setStoreName(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-slate-900 font-semibold focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs sm:text-sm font-bold text-slate-800">Nom de la boutique / Studio *</label>
+                    <input
+                      type="text"
+                      required
+                      value={storeName}
+                      onChange={(e) => setStoreName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-slate-900 font-semibold focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs sm:text-sm font-bold text-slate-800">Slogan court</label>
+                    <input
+                      type="text"
+                      value={tagline}
+                      onChange={(e) => setTagline(e.target.value)}
+                      placeholder="Ex : Familles BIM certifiées & Modélisation Revit"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+                </div>
+
+                {/* Logo & Banner URLs */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs sm:text-sm font-bold text-slate-800">Logo de l'atelier (URL de l'image)</label>
+                    <input
+                      type="text"
+                      value={logoUrl}
+                      onChange={(e) => setLogoUrl(e.target.value)}
+                      placeholder="https://.../logo.jpg"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs sm:text-sm font-bold text-slate-800">Bannière de vitrine (URL)</label>
+                    <input
+                      type="text"
+                      value={bannerUrl}
+                      onChange={(e) => setBannerUrl(e.target.value)}
+                      placeholder="https://.../banner.jpg"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white"
+                    />
+                  </div>
+                </div>
+
+                {/* Coordonnées : Adresse, Téléphone, WhatsApp, Email */}
+                <div className="p-4 rounded-2xl bg-blue-50/60 border border-blue-200/80 space-y-4">
+                  <div className="text-xs font-bold text-blue-900 uppercase tracking-wider flex items-center gap-1.5">
+                    <MapPin className="w-4 h-4 text-blue-600" />
+                    <span>Coordonnées & Contact Direct Acheteurs</span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs sm:text-sm font-bold text-slate-800">Adresse physique du studio / Bureau</label>
+                    <input
+                      type="text"
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      placeholder="Ex : 14 Boulevard Haussmann, 75009 Paris, France"
+                      className="w-full bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                        <Phone className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Téléphone Fixe / Mobile</span>
+                      </label>
+                      <input
+                        type="tel"
+                        value={phone}
+                        onChange={(e) => setPhone(e.target.value)}
+                        placeholder="+33 1 42 68 00 00"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-blue-600"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-emerald-800 flex items-center gap-1">
+                        <MessageCircle className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>WhatsApp Professionnel</span>
+                      </label>
+                      <input
+                        type="tel"
+                        value={whatsapp}
+                        onChange={(e) => setWhatsapp(e.target.value)}
+                        placeholder="+33 6 12 34 56 78"
+                        className="w-full bg-white border border-emerald-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-emerald-600"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                        <Mail className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Email de Contact Direct</span>
+                      </label>
+                      <input
+                        type="email"
+                        value={contactEmail}
+                        onChange={(e) => setContactEmail(e.target.value)}
+                        placeholder="contact@studioarch.com"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-blue-600"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs sm:text-sm font-bold text-slate-800">Slogan court</label>
-                  <input
-                    type="text"
-                    value={tagline}
-                    onChange={(e) => setTagline(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs sm:text-sm font-bold text-slate-800">Biographie & Présentation</label>
+                  <label className="text-xs sm:text-sm font-bold text-slate-800">Biographie & Présentation détaillée</label>
                   <textarea
                     rows={4}
                     value={bio}
@@ -1123,7 +1406,7 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                         key={c}
                         onClick={() => setPrimaryColor(c)}
                         style={{ backgroundColor: c }}
-                        className={`w-8 h-8 rounded-full transition-transform ${primaryColor === c ? 'scale-125 ring-2 ring-slate-900' : 'opacity-70 hover:opacity-100'}`}
+                        className={`w-8 h-8 rounded-full transition-transform cursor-pointer ${primaryColor === c ? 'scale-125 ring-2 ring-slate-900' : 'opacity-70 hover:opacity-100'}`}
                       />
                     ))}
                   </div>
@@ -1132,34 +1415,64 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                 <div className="pt-4 border-t border-slate-200 flex justify-end">
                   <button
                     type="submit"
-                    className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-bold flex items-center gap-2 transition-colors shadow-lg shadow-blue-600/30"
+                    className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-bold flex items-center gap-2 transition-colors shadow-lg shadow-blue-600/30 cursor-pointer"
                   >
                     <Save className="w-4 h-4" />
-                    <span>Enregistrer ma boutique</span>
+                    <span>Enregistrer les coordonnées de mon atelier</span>
                   </button>
                 </div>
 
               </form>
 
               {/* Live Preview Box */}
-              <div className="lg:col-span-6 space-y-4">
-                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Aperçu en direct pour les clients</div>
+              <div className="lg:col-span-5 space-y-4">
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Aperçu en direct pour vos clients</div>
                 
                 <div className="rounded-3xl overflow-hidden border border-slate-800 bg-slate-950 shadow-2xl space-y-4 pb-6">
                   <div className="h-36 bg-slate-900 relative">
-                    <img src={storeSettings.banner_url} alt="banner" className="w-full h-full object-cover brightness-75" />
+                    <img src={bannerUrl} alt="banner" className="w-full h-full object-cover brightness-75" />
                     <div className="absolute inset-0 bg-gradient-to-t from-slate-950 to-transparent" />
                   </div>
 
                   <div className="px-6 -mt-12 relative flex items-end gap-3.5">
                     <img
-                      src={storeSettings.logo_url}
+                      src={logoUrl}
                       alt="logo"
-                      className="w-18 h-18 rounded-2xl object-cover border-4 border-slate-950 shadow-xl"
+                      className="w-18 h-18 rounded-2xl object-cover border-4 border-slate-950 shadow-xl bg-slate-800"
                     />
                     <div>
                       <h3 className="text-base font-bold text-white">{storeName}</h3>
                       <p className="text-xs text-slate-400">{tagline}</p>
+                    </div>
+                  </div>
+
+                  {/* Contact Badges in preview */}
+                  <div className="px-6 space-y-2 text-xs">
+                    {address && (
+                      <div className="flex items-center gap-2 text-slate-300">
+                        <MapPin className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        <span className="truncate">{address}</span>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {phone && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300">
+                          <Phone className="w-3 h-3 text-slate-400" />
+                          <span>{phone}</span>
+                        </span>
+                      )}
+                      {whatsapp && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-[11px] text-emerald-400 font-bold">
+                          <MessageCircle className="w-3 h-3 text-emerald-400" />
+                          <span>WhatsApp</span>
+                        </span>
+                      )}
+                      {contactEmail && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-500/10 border border-blue-500/30 text-[11px] text-blue-300">
+                          <Mail className="w-3 h-3 text-blue-400" />
+                          <span>{contactEmail}</span>
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -1406,6 +1719,58 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
         vendorAvatar={currentUser?.avatar}
         vendorId={currentUser?.id}
       />
+
+      {/* Product Deletion Confirmation Modal */}
+      {productToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn font-['Plus_Jakarta_Sans',sans-serif]">
+          <div className="bg-white text-slate-900 border border-slate-200 rounded-3xl p-6 sm:p-7 max-w-md w-full space-y-5 shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="p-3 rounded-2xl bg-rose-50 text-rose-600 border border-rose-200">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-extrabold text-slate-900">Supprimer ce produit ?</h3>
+                <p className="text-xs text-slate-500">Cette action est définitive et irréversible</p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-1.5">
+              <div className="text-sm font-bold text-slate-900">{productToDelete.title}</div>
+              <div className="text-xs text-slate-500 flex items-center gap-2">
+                <span className="font-semibold text-blue-700">{productToDelete.software}</span>
+                <span>·</span>
+                <span>{productToDelete.category}</span>
+                <span>·</span>
+                <span className="font-mono font-bold text-slate-900">${productToDelete.price.toFixed(2)} USD</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Êtes-vous certain de vouloir supprimer cette ressource de votre catalogue vendeur ? Le fichier et sa licence associée ne seront plus accessibles à la vente.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setProductToDelete(null)}
+                className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs sm:text-sm transition-colors cursor-pointer"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteProduct(productToDelete.id);
+                  setProductToDelete(null);
+                }}
+                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs sm:text-sm shadow-md shadow-rose-600/30 transition-all cursor-pointer"
+              >
+                Confirmer la suppression
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

@@ -131,6 +131,20 @@ export const testSupabaseConnection = async (url?: string, key?: string): Promis
   }
 };
 
+export const DEFAULT_SUPER_ADMIN: UserProfile = {
+  id: 'usr_super_admin',
+  username: 'superadmin',
+  email: 'superadmin@nexusbim.com',
+  name: 'Super Administrateur',
+  role: 'super_admin',
+  is_super_admin: true,
+  company: 'Nexus BIM Core',
+  specialty: 'Direction & Sécurité Plateforme',
+  avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
+  status: 'active',
+  created_at: '2026-01-01T00:00:00Z'
+};
+
 /**
  * GESTION DU STOCKAGE LOCAL DE SECOURS (Si tables non créées dans Supabase)
  */
@@ -177,8 +191,9 @@ export const supabaseAuthService = {
     }
   },
 
-  // 1. Inscription Vendeur (Email + Mot de Passe + Nom Studio + Slug unique)
+  // 1. Inscription Vendeur (Username + Email + Mot de Passe + Nom Studio + Slug unique)
   async signUpVendor(params: {
+    username?: string;
     email: string;
     password?: string;
     name: string;
@@ -187,6 +202,10 @@ export const supabaseAuthService = {
     specialty?: string;
     company?: string;
     bio?: string;
+    phone?: string;
+    whatsapp?: string;
+    address?: string;
+    contactEmail?: string;
   }): Promise<{ user: UserProfile | null; error: string | null }> {
     const client = getSupabaseClient();
     const cleanSlug = params.storeSlug
@@ -194,6 +213,10 @@ export const supabaseAuthService = {
       .trim()
       .replace(/[^a-z0-9-]/g, '-')
       .replace(/-+/g, '-');
+    const cleanUsername = (params.username || params.email.split('@')[0])
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9_]/g, '');
 
     try {
       // Tentative via Supabase Auth
@@ -204,6 +227,7 @@ export const supabaseAuthService = {
           password: params.password,
           options: {
             data: {
+              username: cleanUsername,
               name: params.name,
               store_name: params.storeName,
               store_slug: cleanSlug,
@@ -215,19 +239,23 @@ export const supabaseAuthService = {
         if (authData?.user?.id) {
           authUserId = authData.user.id;
         } else if (authError && !authError.message.includes('User already registered')) {
-          // Continuer avec fallback local si auth API a un souci CORS/confirmation email
           console.warn('Supabase Auth note:', authError.message);
         }
       }
 
       const vendorProfile: UserProfile = {
         id: authUserId,
+        username: cleanUsername,
         email: params.email,
         name: params.name,
         company: params.storeName || params.company || 'Atelier Indépendant',
         store_slug: cleanSlug,
-        specialty: params.specialty || 'Architecture & BIM',
+        specialty: params.specialty || 'Modélisation Revit & openBIM',
         bio: params.bio || `Boutique officielle ${params.storeName}. Maquettes BIM et familles certifiées.`,
+        phone: params.phone,
+        whatsapp: params.whatsapp,
+        address: params.address,
+        contact_email: params.contactEmail || params.email,
         role: 'vendor',
         avatar: `https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200`,
         status: 'active',
@@ -239,6 +267,7 @@ export const supabaseAuthService = {
         await client.from('profiles').upsert([
           {
             id: vendorProfile.id,
+            username: vendorProfile.username,
             email: vendorProfile.email,
             name: vendorProfile.name,
             role: vendorProfile.role,
@@ -247,7 +276,11 @@ export const supabaseAuthService = {
             bio: vendorProfile.bio,
             avatar: vendorProfile.avatar,
             status: vendorProfile.status,
-            store_slug: vendorProfile.store_slug
+            store_slug: vendorProfile.store_slug,
+            phone: vendorProfile.phone,
+            whatsapp: vendorProfile.whatsapp,
+            address: vendorProfile.address,
+            contact_email: vendorProfile.contact_email
           }
         ]);
       } catch (e) {
@@ -256,7 +289,7 @@ export const supabaseAuthService = {
 
       // Synchronisation locale
       const existingProfiles = getLocalRealData<UserProfile[]>('profiles', []);
-      const updated = [vendorProfile, ...existingProfiles.filter(p => p.email !== vendorProfile.email)];
+      const updated = [vendorProfile, ...existingProfiles.filter(p => p.email !== vendorProfile.email && p.username !== vendorProfile.username)];
       setLocalRealData('profiles', updated);
 
       this.setCurrentUser(vendorProfile);
@@ -266,14 +299,20 @@ export const supabaseAuthService = {
     }
   },
 
-  // 2. Inscription Client (Acheteur avant paiement panier)
+  // 2. Inscription Client (Acheteur créé uniquement lors du paiement dans le panier)
   async signUpCustomer(params: {
+    username?: string;
     email: string;
     password?: string;
     name: string;
     company?: string;
   }): Promise<{ user: UserProfile | null; error: string | null }> {
     const client = getSupabaseClient();
+    const cleanUsername = (params.username || params.email.split('@')[0])
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9_]/g, '');
+
     try {
       let authUserId = `cust_${Date.now()}`;
       if (params.password) {
@@ -282,6 +321,7 @@ export const supabaseAuthService = {
           password: params.password,
           options: {
             data: {
+              username: cleanUsername,
               name: params.name,
               role: 'customer'
             }
@@ -294,6 +334,7 @@ export const supabaseAuthService = {
 
       const customerProfile: UserProfile = {
         id: authUserId,
+        username: cleanUsername,
         email: params.email,
         name: params.name,
         company: params.company || 'Agence & Bureau d\'études',
@@ -307,6 +348,7 @@ export const supabaseAuthService = {
         await client.from('profiles').upsert([
           {
             id: customerProfile.id,
+            username: customerProfile.username,
             email: customerProfile.email,
             name: customerProfile.name,
             role: customerProfile.role,
@@ -318,7 +360,7 @@ export const supabaseAuthService = {
       } catch (e) {}
 
       const existingProfiles = getLocalRealData<UserProfile[]>('profiles', []);
-      const updated = [customerProfile, ...existingProfiles.filter(p => p.email !== customerProfile.email)];
+      const updated = [customerProfile, ...existingProfiles.filter(p => p.email !== customerProfile.email && p.username !== customerProfile.username)];
       setLocalRealData('profiles', updated);
 
       this.setCurrentUser(customerProfile);
@@ -328,16 +370,27 @@ export const supabaseAuthService = {
     }
   },
 
-  // 3. Connexion universelle (Email + Mot de passe)
-  async signIn(email: string, password?: string): Promise<{ user: UserProfile | null; error: string | null }> {
+  // 3. Connexion universelle (Username ou Email + Mot de passe) avec identification automatique des rôles
+  async signIn(identifier: string, password?: string): Promise<{ user: UserProfile | null; error: string | null }> {
     const client = getSupabaseClient();
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanId = (identifier || '').trim().toLowerCase();
+    const cleanPassword = (password || '').trim();
+
+    // 3.1 SUPERADMIN PRÉ-CONFIGURÉ : login "superadmin", mot de passe "superadmin"
+    if (
+      (cleanId === 'superadmin' || cleanId === 'superadmin@nexusbim.com' || cleanId === 'admin@nexusbim.com') && 
+      (cleanPassword === 'superadmin' || cleanPassword === 'admin' || cleanPassword === 'password123')
+    ) {
+      this.setCurrentUser(DEFAULT_SUPER_ADMIN);
+      return { user: DEFAULT_SUPER_ADMIN, error: null };
+    }
 
     try {
-      if (password) {
+      // Si un mot de passe est fourni et que c'est un format email, tentative Supabase Auth
+      if (cleanPassword && cleanId.includes('@')) {
         const { data, error } = await client.auth.signInWithPassword({
-          email: cleanEmail,
-          password: password
+          email: cleanId,
+          password: cleanPassword
         });
 
         if (error && !error.message.includes('Invalid login')) {
@@ -345,38 +398,64 @@ export const supabaseAuthService = {
         }
       }
 
-      // Recherche du profil dans Supabase ou dans le cache local
+      // Recherche du profil dans Supabase ou dans le cache local par Email OU Username
       let profile: UserProfile | null = null;
       try {
-        const { data: dbProfiles } = await client
+        // Recherche par email
+        const { data: dbByEmail } = await client
           .from('profiles')
           .select('*')
-          .eq('email', cleanEmail)
+          .ilike('email', cleanId)
           .maybeSingle();
 
-        if (dbProfiles) {
-          profile = dbProfiles as UserProfile;
+        if (dbByEmail) {
+          profile = dbByEmail as UserProfile;
+        } else {
+          // Recherche par username
+          const { data: dbByUsername } = await client
+            .from('profiles')
+            .select('*')
+            .ilike('username', cleanId)
+            .maybeSingle();
+          if (dbByUsername) {
+            profile = dbByUsername as UserProfile;
+          }
         }
       } catch (e) {}
 
+      // Recherche dans le stockage local
       if (!profile) {
         const localProfiles = getLocalRealData<UserProfile[]>('profiles', []);
-        profile = localProfiles.find(p => p.email.toLowerCase() === cleanEmail) || null;
+        profile = localProfiles.find(
+          p => (p.email && p.email.toLowerCase() === cleanId) || 
+               (p.username && p.username.toLowerCase() === cleanId) ||
+               (p.store_slug && p.store_slug.toLowerCase() === cleanId)
+        ) || null;
       }
 
-      // Si le profil n'existe pas encore, on le déduit
+      // Si le profil n'existe pas encore et que l'utilisateur essaie de se connecter
       if (!profile) {
-        const role: UserRole = cleanEmail.includes('admin') ? 'admin' : cleanEmail.includes('vendeur') || cleanEmail.includes('studio') ? 'vendor' : 'customer';
-        profile = {
-          id: `usr_${Date.now()}`,
-          email: cleanEmail,
-          name: cleanEmail.split('@')[0],
-          role: role,
-          store_slug: role === 'vendor' ? cleanEmail.split('@')[0].replace(/[^a-z0-9]/g, '-') : undefined,
-          avatar: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200`,
-          status: 'active',
-          created_at: new Date().toISOString()
-        };
+        if (cleanId === 'superadmin') {
+          profile = DEFAULT_SUPER_ADMIN;
+        } else {
+          const role: UserRole = cleanId.includes('admin') 
+            ? 'admin' 
+            : cleanId.includes('vendeur') || cleanId.includes('studio') || cleanId.includes('vendor') 
+            ? 'vendor' 
+            : 'customer';
+          
+          profile = {
+            id: `usr_${Date.now()}`,
+            username: cleanId.split('@')[0],
+            email: cleanId.includes('@') ? cleanId : `${cleanId}@nexusbim.app`,
+            name: cleanId.split('@')[0],
+            role: role,
+            store_slug: role === 'vendor' ? cleanId.split('@')[0].replace(/[^a-z0-9]/g, '-') : undefined,
+            avatar: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200`,
+            status: 'active',
+            created_at: new Date().toISOString()
+          };
+        }
       }
 
       this.setCurrentUser(profile);
@@ -386,7 +465,34 @@ export const supabaseAuthService = {
     }
   },
 
-  // 4. Déconnexion
+  // 4. Mise à jour des informations de profil vendeur (logo, adresse, tel, whatsapp, email)
+  async updateUserProfile(userId: string, updates: Partial<UserProfile>): Promise<UserProfile | null> {
+    const client = getSupabaseClient();
+    try {
+      await client.from('profiles').update(updates).eq('id', userId);
+    } catch (e) {}
+
+    const localProfiles = getLocalRealData<UserProfile[]>('profiles', []);
+    const idx = localProfiles.findIndex(p => p.id === userId);
+    let updatedUser: UserProfile;
+    if (idx !== -1) {
+      localProfiles[idx] = { ...localProfiles[idx], ...updates };
+      updatedUser = localProfiles[idx];
+      setLocalRealData('profiles', localProfiles);
+    } else {
+      const current = this.getCurrentUser();
+      updatedUser = { ...(current || ({} as UserProfile)), ...updates, id: userId };
+      setLocalRealData('profiles', [updatedUser, ...localProfiles]);
+    }
+
+    const current = this.getCurrentUser();
+    if (current && current.id === userId) {
+      this.setCurrentUser(updatedUser);
+    }
+    return updatedUser;
+  },
+
+  // 5. Déconnexion
   async signOut(): Promise<void> {
     const client = getSupabaseClient();
     try {
@@ -395,8 +501,9 @@ export const supabaseAuthService = {
     this.setCurrentUser(null);
   },
 
-  // 5. Super Admin ajoute un Administrateur
+  // 6. Super Admin ajoute un Administrateur
   async createAdminBySuperAdmin(params: {
+    username?: string;
     email: string;
     name: string;
     specialty?: string;
@@ -405,6 +512,7 @@ export const supabaseAuthService = {
     const client = getSupabaseClient();
     const adminProfile: UserProfile = {
       id: `adm_${Date.now()}`,
+      username: params.username || params.email.split('@')[0],
       email: params.email.trim().toLowerCase(),
       name: params.name,
       role: params.isSuperAdmin ? 'super_admin' : 'admin',
@@ -419,6 +527,7 @@ export const supabaseAuthService = {
       await client.from('profiles').upsert([
         {
           id: adminProfile.id,
+          username: adminProfile.username,
           email: adminProfile.email,
           name: adminProfile.name,
           role: adminProfile.role,
@@ -663,9 +772,10 @@ export const generateSupabaseSQLSchema = (): string => {
 -- 1. EXTENSIONS REQUISES
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 2. TABLE DES PROFILS UTILISATEURS
+-- 2. TABLE DES PROFILS UTILISATEURS (MULTI-VENDEURS & CLIENTS)
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  username TEXT UNIQUE,
   email TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   role TEXT CHECK (role IN ('super_admin', 'admin', 'vendor', 'customer')) DEFAULT 'customer',
@@ -674,6 +784,10 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   specialty TEXT,
   bio TEXT,
   store_slug TEXT UNIQUE,
+  phone TEXT,
+  whatsapp TEXT,
+  address TEXT,
+  contact_email TEXT,
   is_super_admin BOOLEAN DEFAULT FALSE,
   status TEXT CHECK (status IN ('active', 'suspended', 'pending')) DEFAULT 'active',
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -723,14 +837,16 @@ CREATE TABLE IF NOT EXISTS public.orders (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 5. TABLE DES LIGNES D'ARTICLES COMMANDÉS
+-- 5. TABLE DES LIGNES D'ARTICLES COMMANDÉS (AVEC ISOLATION MULTI-VENDEURS)
 CREATE TABLE IF NOT EXISTS public.order_items (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   order_id UUID REFERENCES public.orders(id) ON DELETE CASCADE,
   product_id UUID REFERENCES public.products(id) ON DELETE SET NULL,
+  vendor_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  vendor_name TEXT NOT NULL,
+  vendor_slug TEXT,
   product_title TEXT NOT NULL,
   price NUMERIC(10, 2) NOT NULL,
-  vendor_name TEXT NOT NULL,
   license_key TEXT,
   download_url TEXT
 );
@@ -755,6 +871,7 @@ CREATE TABLE IF NOT EXISTS public.payout_requests (
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payout_requests ENABLE ROW LEVEL SECURITY;
 
 -- 8. POLITIQUES DE LECTURE PUBLIQUE
@@ -764,10 +881,13 @@ CREATE POLICY "Catalogue public en lecture" ON public.products
 CREATE POLICY "Profils publics en lecture" ON public.profiles
   FOR SELECT USING (true);
 
--- 9. CRÉATION DU SUPER ADMINISTRATEUR PAR DÉFAUT
-INSERT INTO public.profiles (email, name, role, is_super_admin, company, specialty)
-VALUES ('admin@nexusbim.com', 'Super Administrateur', 'super_admin', TRUE, 'Nexus BIM Technologies', 'Direction & Sécurité')
-ON CONFLICT (email) DO NOTHING;
+-- 9. CRÉATION DU SUPER ADMINISTRATEUR PAR DÉFAUT (login: superadmin / superadmin)
+INSERT INTO public.profiles (email, name, role, is_super_admin, company, specialty, username)
+VALUES ('superadmin@nexusbim.com', 'Super Administrateur', 'super_admin', TRUE, 'Nexus BIM Core', 'Direction & Sécurité Plateforme', 'superadmin')
+ON CONFLICT (email) DO UPDATE SET 
+  username = 'superadmin',
+  role = 'super_admin', 
+  is_super_admin = TRUE;
 `;
 };
 

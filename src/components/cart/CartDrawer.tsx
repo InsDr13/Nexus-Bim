@@ -46,6 +46,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
 
@@ -78,10 +79,20 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
 
     try {
       if (authMode === 'signup') {
+        if (!authEmail.trim() || !authEmail.includes('@')) {
+          throw new Error('Veuillez saisir une adresse email valide.');
+        }
+        if (!authPassword || authPassword.length < 4) {
+          throw new Error('Le mot de passe doit comporter au moins 4 caractères.');
+        }
+        if (authPassword !== authConfirmPassword) {
+          throw new Error('Les deux mots de passe ne correspondent pas.');
+        }
+
         const { user, error } = await supabaseAuthService.signUpCustomer({
-          email: authEmail,
+          email: authEmail.trim(),
           password: authPassword,
-          name: authName || authEmail.split('@')[0]
+          name: authName.trim() || authEmail.split('@')[0]
         });
         if (error) throw new Error(error);
         if (user) {
@@ -89,7 +100,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
           setStep('payment');
         }
       } else {
-        const { user, error } = await supabaseAuthService.signIn(authEmail, authPassword);
+        const { user, error } = await supabaseAuthService.signIn(authEmail.trim(), authPassword);
         if (error) throw new Error(error);
         if (user) {
           if (onUserAuthenticated) onUserAuthenticated(user);
@@ -360,19 +371,36 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-700">Mot de Passe</label>
+                  <label className="text-xs sm:text-sm font-bold text-slate-700">Mot de Passe</label>
                   <div className="relative">
-                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
                     <input
                       type="password"
                       required
                       value={authPassword}
                       onChange={(e) => setAuthPassword(e.target.value)}
                       placeholder="••••••••••••"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-blue-600 font-medium"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-blue-600 font-medium"
                     />
                   </div>
                 </div>
+
+                {authMode === 'signup' && (
+                  <div className="space-y-1">
+                    <label className="text-xs sm:text-sm font-bold text-slate-700">Confirmer le Mot de Passe</label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                      <input
+                        type="password"
+                        required
+                        value={authConfirmPassword}
+                        onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                        placeholder="••••••••••••"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-blue-600 font-medium"
+                      />
+                    </div>
+                  </div>
+                )}
 
                 <button
                   type="submit"
