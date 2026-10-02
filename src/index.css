@@ -22,27 +22,67 @@
   background: rgba(59, 130, 246, 0.6);
 }
 
-/* Print Styles for PDF Invoices & Reports */
+/* Print Styles for PDF Invoices, Catalog & Reports */
 @media print {
-  body {
+  html, body {
     background: #ffffff !important;
     color: #000000 !important;
+    height: auto !important;
+    min-height: 100% !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
+
   .no-print {
     display: none !important;
   }
+
+  /* Déverrouille les conteneurs fixes pour permettre l'impression multipage sans masque sombre */
+  .print-modal-backdrop {
+    position: static !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    display: block !important;
+    z-index: auto !important;
+  }
+
+  .print-modal-card {
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
   .printable-area {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
+    position: static !important;
     width: 100% !important;
     margin: 0 !important;
-    padding: 20px !important;
+    padding: 10mm 15mm !important;
     background: #ffffff !important;
     color: #000000 !important;
     border: none !important;
     box-shadow: none !important;
     display: block !important;
-    z-index: 99999 !important;
+    overflow: visible !important;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+  }
+
+  table {
+    page-break-inside: auto !important;
   }
 }

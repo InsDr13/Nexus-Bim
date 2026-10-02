@@ -52,7 +52,7 @@ export const PublicStoreModal: React.FC<PublicStoreModalProps> = ({
 
   // Compute clean unique slug
   const activeSlug = vendorSlug || vendorName.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
-  const vendorDirectUrl = `${window.location.origin}/vendeur/${activeSlug}`;
+  const vendorDirectUrl = `${window.location.origin}/#vendeur/${activeSlug}`;
 
   // Filter vendor products
   const vendorProducts = products.filter(p => {
@@ -60,6 +60,11 @@ export const PublicStoreModal: React.FC<PublicStoreModalProps> = ({
     const matchSlug = p.vendor_slug && p.vendor_slug.toLowerCase() === activeSlug.toLowerCase();
     return matchName || matchSlug;
   });
+
+  const totalVendorSales = vendorProducts.reduce((sum, p) => sum + (p.sales_count || 0), 0);
+  const avgRating = vendorProducts.length > 0 
+    ? (vendorProducts.reduce((sum, p) => sum + (p.rating || 5.0), 0) / vendorProducts.length).toFixed(1) 
+    : '5.0';
 
   const filteredProducts = vendorProducts.filter(p => {
     if (selectedSoftware !== 'all' && p.software !== selectedSoftware) return false;
@@ -181,14 +186,14 @@ export const PublicStoreModal: React.FC<PublicStoreModalProps> = ({
               </div>
               <div className="h-6 w-px bg-slate-800" />
               <div className="text-center">
-                <div className="text-base font-bold text-white font-mono">1.8k</div>
+                <div className="text-base font-bold text-white font-mono">{totalVendorSales}</div>
                 <div className="text-[11px] text-slate-400">Ventes</div>
               </div>
               <div className="h-6 w-px bg-slate-800" />
               <div className="text-center">
                 <div className="text-base font-bold text-amber-400 font-mono flex items-center gap-1 justify-center">
                   <Star className="w-4 h-4 fill-current" />
-                  <span>4.9</span>
+                  <span>{avgRating}</span>
                 </div>
                 <div className="text-[11px] text-slate-400">Avis</div>
               </div>

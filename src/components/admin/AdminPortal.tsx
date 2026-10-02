@@ -559,21 +559,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <span>Se Connecter comme Administrateur</span>
             </button>
 
-            {appMode === 'demo' && (
-              <button
-                type="button"
-                onClick={async () => {
-                  const { user } = await supabaseAuthService.signIn('admin@nexusbim.com', 'password123');
-                  if (user && onUserAuthenticated) {
-                    onUserAuthenticated(user);
-                  }
-                }}
-                className="w-full py-2 rounded-xl bg-purple-950/40 hover:bg-purple-950/60 text-purple-300 border border-purple-500/30 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <span>Connexion 1-Clic Super Admin (Démo)</span>
-              </button>
-            )}
-
             <button
               onClick={onNavigateToMarketplace}
               className="w-full py-2 text-xs text-slate-400 hover:text-white transition-colors flex items-center justify-center gap-1.5"

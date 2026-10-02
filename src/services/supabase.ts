@@ -73,17 +73,15 @@ export const getSupabaseClient = (): SupabaseClient => {
 export const supabase = getSupabaseClient();
 
 /**
- * GESTION DU MODE : MODE RÉEL SUPABASE vs MODE DÉMO
+ * GESTION DU MODE : MODE PRODUCTION SUPABASE UNIQUE
  */
-export const getAppMode = (): 'real' | 'demo' => {
-  if (typeof localStorage === 'undefined') return 'real';
-  const saved = localStorage.getItem('nexus_app_mode');
-  return (saved === 'demo' ? 'demo' : 'real');
+export const getAppMode = (): 'real' => {
+  return 'real';
 };
 
-export const setAppMode = (mode: 'real' | 'demo') => {
+export const setAppMode = (_mode?: 'real' | 'demo') => {
   if (typeof localStorage !== 'undefined') {
-    localStorage.setItem('nexus_app_mode', mode);
+    localStorage.setItem('nexus_app_mode', 'real');
   }
 };
 
@@ -146,6 +144,45 @@ export const DEFAULT_SUPER_ADMIN: UserProfile = {
 };
 
 /**
+ * Sauvegarde ultra-sécurisée dans le localStorage évitant toute exception QuotaExceededError
+ */
+export const safeLocalStorageSetItem = (key: string, value: string): boolean => {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (err: any) {
+    console.warn(`[Nexus Storage Quota Safety] Nettoyage et assainissement pour la clé: ${key}`);
+    try {
+      // Nettoyage des anciennes clés ou cachés volumineux
+      const candidateKeys = ['nexus_real_products', 'nexus_real_orders', 'nexus_real_profiles'];
+      for (const k of candidateKeys) {
+        if (k !== key) {
+          const item = localStorage.getItem(k);
+          if (item && item.length > 30000) {
+            localStorage.removeItem(k);
+          }
+        }
+      }
+
+      // Si la valeur contient une image encodée en base64 volumineuse (> 10KB), on la remplace par un preset safe
+      let sanitizedValue = value;
+      if (sanitizedValue.includes('data:image/')) {
+        sanitizedValue = sanitizedValue.replace(
+          /data:image\/[a-zA-Z0-9.+]+;base64,[^"']{1000,}/g, 
+          'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200'
+        );
+      }
+      localStorage.setItem(key, sanitizedValue);
+      return true;
+    } catch (fallbackErr) {
+      console.warn(`[Nexus Storage Quota Safety] Impossible d'écrire ${key} dans localStorage:`, fallbackErr);
+      return false;
+    }
+  }
+};
+
+/**
  * GESTION DU STOCKAGE LOCAL DE SECOURS (Si tables non créées dans Supabase)
  */
 const getLocalRealData = <T>(key: string, defaultValue: T): T => {
@@ -161,7 +198,164 @@ const getLocalRealData = <T>(key: string, defaultValue: T): T => {
 
 const setLocalRealData = (key: string, data: any) => {
   if (typeof localStorage !== 'undefined') {
-    localStorage.setItem(`nexus_real_${key}`, JSON.stringify(data));
+    safeLocalStorageSetItem(`nexus_real_${key}`, JSON.stringify(data));
+  }
+};
+
+/**
+ * SERVICE OFFICIEL DE GESTION DU STORAGE SUPABASE (AVATARS, BANNIÈRES, FICHIERS)
+ */
+export const supabaseStorageService = {
+  /**
+   * Compresse une image côté client pour éviter la surcharge réseau et les limites de quota
+   */
+  async compressImage(
+    file: File,
+    maxWidth = 1200,
+    maxHeight = 800,
+    quality = 0.82
+  ): Promise<{ blob: Blob; dataUrl: string }> {
+    return new Promise((resolve) => {
+      if (!file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = () => resolve({ blob: file, dataUrl: (reader.result as string) || '' });
+        reader.onerror = () => resolve({ blob: file, dataUrl: '' });
+        reader.readAsDataURL(file);
+        return;
+      }
+
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth || height > maxHeight) {
+          if (width / height > maxWidth / maxHeight) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          } else {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(width, 1);
+        canvas.height = Math.max(height, 1);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          const reader = new FileReader();
+          reader.onload = () => resolve({ blob: file, dataUrl: (reader.result as string) || '' });
+          reader.onerror = () => resolve({ blob: file, dataUrl: '' });
+          reader.readAsDataURL(file);
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+        const mimeType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+        const dataUrl = canvas.toDataURL(mimeType, quality);
+
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              resolve({ blob, dataUrl });
+            } else {
+              resolve({ blob: file, dataUrl });
+            }
+          },
+          mimeType,
+          quality
+        );
+      };
+
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        const reader = new FileReader();
+        reader.onload = () => resolve({ blob: file, dataUrl: (reader.result as string) || '' });
+        reader.onerror = () => resolve({ blob: file, dataUrl: '' });
+        reader.readAsDataURL(file);
+      };
+
+      img.src = objectUrl;
+    });
+  },
+
+  /**
+   * Upload réel d'un fichier image vers Supabase Storage
+   * Essaie les buckets de destination ('avatars', 'banners', 'products', 'nexus-assets' ou fallback)
+   */
+  async uploadFile(
+    file: File,
+    type: 'avatar' | 'banner' | 'product',
+    customSlug?: string
+  ): Promise<{ url: string; error?: string | null; isLocalFallback?: boolean }> {
+    const client = getSupabaseClient();
+    
+    // 1. Optimisation préalable : avatar = 400x400 max, bannière = 1400x600 max
+    const maxWidth = type === 'avatar' ? 400 : 1400;
+    const maxHeight = type === 'avatar' ? 400 : 700;
+    const { blob, dataUrl } = await this.compressImage(file, maxWidth, maxHeight, 0.82);
+
+    // 2. Détermination des buckets cibles par ordre de priorité
+    const candidateBuckets = type === 'avatar' 
+      ? ['avatars', 'vendor-assets', 'nexus-assets', 'products', 'public']
+      : type === 'banner'
+      ? ['banners', 'vendor-assets', 'nexus-assets', 'products', 'public']
+      : ['products', 'nexus-assets', 'avatars', 'banners', 'public'];
+
+    const fileExt = file.name.split('.').pop()?.toLowerCase() || (file.type.includes('png') ? 'png' : 'jpg');
+    const slugPrefix = customSlug ? `${customSlug.replace(/[^a-z0-9]/g, '_')}_` : '';
+    const fileName = `${slugPrefix}${type}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${fileExt}`;
+
+    let lastErrorMsg = '';
+
+    // 3. Essai d'upload dans les buckets Supabase existants
+    for (const bucket of candidateBuckets) {
+      try {
+        const { data, error } = await client.storage
+          .from(bucket)
+          .upload(fileName, blob, {
+            cacheControl: '3600',
+            upsert: true,
+            contentType: file.type || 'image/jpeg'
+          });
+
+        if (!error && data?.path) {
+          const { data: pubData } = client.storage.from(bucket).getPublicUrl(data.path);
+          if (pubData?.publicUrl) {
+            return {
+              url: pubData.publicUrl,
+              error: null,
+              isLocalFallback: false
+            };
+          }
+        } else if (error) {
+          // Si le bucket n'existe pas ou erreur de permission, on enregistre et on continue vers le bucket suivant
+          lastErrorMsg = error.message;
+        }
+      } catch (err: any) {
+        lastErrorMsg = err?.message || 'Erreur réseau Supabase';
+      }
+    }
+
+    // 4. Si tous les buckets échouent (ex: bucket non créé encore dans Supabase SQL),
+    // on ne stocke JAMAIS d'image en base64 (requis par l'utilisateur) : on utilise une URL claire
+    const fallbackUrl = type === 'avatar' 
+      ? 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200'
+      : type === 'banner'
+      ? '/src/assets/images/hero_bim_villa_1790765033156.jpg'
+      : '/src/assets/images/bim_commercial_tower_1790765045061.jpg';
+
+    return {
+      url: fallbackUrl,
+      isLocalFallback: true,
+      error: lastErrorMsg 
+        ? `Note Supabase Storage (${lastErrorMsg}) : Le bucket '${type}s' n'est pas encore actif. Exécutez le script SQL de migration pour activer le stockage public direct.` 
+        : null
+    };
   }
 };
 
@@ -184,7 +378,7 @@ export const supabaseAuthService = {
   setCurrentUser(user: UserProfile | null) {
     if (typeof localStorage !== 'undefined') {
       if (user) {
-        localStorage.setItem('nexus_auth_user', JSON.stringify(user));
+        safeLocalStorageSetItem('nexus_auth_user', JSON.stringify(user));
       } else {
         localStorage.removeItem('nexus_auth_user');
       }
@@ -206,6 +400,9 @@ export const supabaseAuthService = {
     whatsapp?: string;
     address?: string;
     contactEmail?: string;
+    logoUrl?: string;
+    bannerUrl?: string;
+    websiteUrl?: string;
   }): Promise<{ user: UserProfile | null; error: string | null }> {
     const client = getSupabaseClient();
     const cleanSlug = params.storeSlug
@@ -217,6 +414,9 @@ export const supabaseAuthService = {
       .toLowerCase()
       .trim()
       .replace(/[^a-z0-9_]/g, '');
+
+    const resolvedLogo = params.logoUrl || `https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200`;
+    const resolvedBanner = params.bannerUrl || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200';
 
     try {
       // Tentative via Supabase Auth
@@ -257,7 +457,8 @@ export const supabaseAuthService = {
         address: params.address,
         contact_email: params.contactEmail || params.email,
         role: 'vendor',
-        avatar: `https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200`,
+        avatar: resolvedLogo,
+        banner_url: resolvedBanner,
         status: 'active',
         created_at: new Date().toISOString()
       };
@@ -280,11 +481,32 @@ export const supabaseAuthService = {
             phone: vendorProfile.phone,
             whatsapp: vendorProfile.whatsapp,
             address: vendorProfile.address,
-            contact_email: vendorProfile.contact_email
+            contact_email: vendorProfile.contact_email,
+            banner_url: vendorProfile.banner_url,
+            website_url: params.websiteUrl
+          }
+        ]);
+
+        // Sauvegarder également dans la table vendor_stores
+        await client.from('vendor_stores').upsert([
+          {
+            vendor_id: vendorProfile.id,
+            store_name: params.storeName,
+            store_slug: cleanSlug,
+            tagline: `Atelier certifié ${vendorProfile.specialty}`,
+            bio: vendorProfile.bio,
+            banner_url: resolvedBanner,
+            logo_url: resolvedLogo,
+            phone: params.phone,
+            whatsapp: params.whatsapp,
+            address: params.address,
+            contact_email: params.contactEmail || params.email,
+            website_url: params.websiteUrl,
+            followers_count: 0
           }
         ]);
       } catch (e) {
-        console.warn('Fallback sync local pour le profil');
+        console.warn('Fallback sync local pour le profil & boutique');
       }
 
       // Synchronisation locale
@@ -292,23 +514,25 @@ export const supabaseAuthService = {
       const updated = [vendorProfile, ...existingProfiles.filter(p => p.email !== vendorProfile.email && p.username !== vendorProfile.username)];
       setLocalRealData('profiles', updated);
 
-      // Sauvegarder automatiquement les paramètres de la boutique pour ne pas les re-demander
-      const initialStoreSettings = {
+      // Sauvegarder automatiquement les paramètres de la boutique
+      const initialStoreSettings: VendorStoreSettings = {
         vendor_id: vendorProfile.id,
         store_name: vendorProfile.company || params.storeName || params.name,
         tagline: `Atelier certifié ${vendorProfile.specialty}`,
         bio: vendorProfile.bio || `Boutique officielle ${params.storeName}. Fichiers et modèles certifiés.`,
-        banner_url: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200',
-        logo_url: vendorProfile.avatar,
+        banner_url: resolvedBanner,
+        logo_url: resolvedLogo,
         primary_color: '#2563eb',
         phone: vendorProfile.phone,
         whatsapp: vendorProfile.whatsapp,
         address: vendorProfile.address,
-        contact_email: vendorProfile.contact_email
+        contact_email: vendorProfile.contact_email,
+        website_url: params.websiteUrl,
+        followers_count: 0
       };
       setLocalRealData(`store_settings_${vendorProfile.id}`, initialStoreSettings);
       if (typeof localStorage !== 'undefined') {
-        localStorage.setItem('nexus_store_settings', JSON.stringify(initialStoreSettings));
+        safeLocalStorageSetItem('nexus_store_settings', JSON.stringify(initialStoreSettings));
       }
 
       this.setCurrentUser(vendorProfile);
@@ -587,15 +811,56 @@ export const supabaseDatabaseService = {
 
   async createProduct(product: Product): Promise<Product> {
     const client = getSupabaseClient();
-    const newProduct = {
+    const newProduct: Product = {
       ...product,
       id: product.id || `prd_${Date.now()}`,
-      created_at: new Date().toISOString()
+      created_at: product.created_at || new Date().toISOString()
+    };
+
+    // Formatage strict des colonnes pour correspondre au schéma SQL PostgreSQL
+    const productRow = {
+      id: newProduct.id,
+      vendor_id: newProduct.vendor_id || 'usr_vendor',
+      vendor_name: newProduct.vendor_name || 'Atelier BIM',
+      vendor_slug: newProduct.vendor_slug || '',
+      vendor_avatar: newProduct.vendor_avatar || '',
+      vendor_rating: Number(newProduct.vendor_rating || 5.0),
+      title: newProduct.title,
+      description: newProduct.description || '',
+      detailed_description: newProduct.detailed_description || '',
+      price: Number(newProduct.price || 0),
+      is_free: Boolean(newProduct.is_free),
+      category: newProduct.category || 'BIM & CAD',
+      software: newProduct.software || 'Revit',
+      product_type: newProduct.product_type || 'construction_plan',
+      image_url: newProduct.image_url || '',
+      gallery: newProduct.gallery || [],
+      file_format: newProduct.file_format || '.rvt',
+      file_size: newProduct.file_size || '10 Mo',
+      version_compatibility: newProduct.version_compatibility || '',
+      license_type: newProduct.license_type || 'Usage professionnel',
+      status: newProduct.status || 'published',
+      sales_count: Number(newProduct.sales_count || 0),
+      rating: Number(newProduct.rating || 5.0),
+      reviews_count: Number(newProduct.reviews_count || 0),
+      download_url: newProduct.download_url || '',
+      external_link: newProduct.external_link || '',
+      sample_activation_key: newProduct.sample_activation_key || '',
+      tags: newProduct.tags || [],
+      created_at: newProduct.created_at,
+      updated_at: new Date().toISOString()
     };
 
     try {
-      await client.from('products').insert([newProduct]);
-    } catch (e) {}
+      const { data, error } = await client.from('products').upsert([productRow]).select();
+      if (error) {
+        console.warn('Supabase createProduct info:', error.message);
+      } else {
+        console.log('Produit enregistré avec succès dans Supabase:', data);
+      }
+    } catch (e: any) {
+      console.warn('Fallback local pour createProduct:', e?.message);
+    }
 
     const localProducts = getLocalRealData<Product[]>('products', []);
     const updated = [newProduct, ...localProducts.filter(p => p.id !== newProduct.id)];
@@ -813,6 +1078,86 @@ export const supabaseDatabaseService = {
       }
     } catch (e) {}
     return getLocalRealData<UserProfile[]>('profiles', [DEFAULT_SUPER_ADMIN]);
+  },
+
+  // 5. BOUTIQUES VENDEURS (PARAMÈTRES, LOGO, BANNIÈRE & SLUG)
+  async getVendorStore(vendorId: string): Promise<VendorStoreSettings | null> {
+    const client = getSupabaseClient();
+    try {
+      const { data, error } = await client
+        .from('vendor_stores')
+        .select('*')
+        .eq('vendor_id', vendorId)
+        .maybeSingle();
+      if (!error && data) return data as VendorStoreSettings;
+    } catch (e) {}
+    const local = getLocalRealData<VendorStoreSettings | null>(`store_settings_${vendorId}`, null);
+    return local;
+  },
+
+  async getVendorStoreBySlug(slug: string): Promise<VendorStoreSettings | null> {
+    const client = getSupabaseClient();
+    try {
+      const { data, error } = await client
+        .from('vendor_stores')
+        .select('*')
+        .eq('store_slug', slug)
+        .maybeSingle();
+      if (!error && data) return data as VendorStoreSettings;
+    } catch (e) {}
+    const localProfiles = getLocalRealData<UserProfile[]>('profiles', []);
+    const match = localProfiles.find(p => p.store_slug === slug);
+    if (match) {
+      const local = getLocalRealData<VendorStoreSettings | null>(`store_settings_${match.id}`, null);
+      if (local) return local;
+      return {
+        vendor_id: match.id,
+        store_name: match.company || match.name,
+        tagline: match.specialty || '',
+        bio: match.bio || '',
+        banner_url: match.banner_url || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200',
+        logo_url: match.avatar || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200',
+        primary_color: '#2563eb',
+        phone: match.phone,
+        whatsapp: match.whatsapp,
+        address: match.address,
+        contact_email: match.contact_email || match.email,
+        followers_count: 0
+      };
+    }
+    return null;
+  },
+
+  async upsertVendorStore(settings: VendorStoreSettings): Promise<VendorStoreSettings> {
+    const client = getSupabaseClient();
+    try {
+      await client.from('vendor_stores').upsert([
+        {
+          vendor_id: settings.vendor_id,
+          store_name: settings.store_name,
+          store_slug: (settings as any).store_slug || settings.store_name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+          tagline: settings.tagline,
+          bio: settings.bio,
+          banner_url: settings.banner_url,
+          logo_url: settings.logo_url,
+          primary_color: settings.primary_color || '#2563eb',
+          phone: settings.phone,
+          whatsapp: settings.whatsapp,
+          address: settings.address,
+          contact_email: settings.contact_email,
+          website_url: settings.website_url,
+          linkedin_url: settings.linkedin_url,
+          followers_count: settings.followers_count || 0,
+          updated_at: new Date().toISOString()
+        }
+      ]);
+    } catch (e) {}
+
+    setLocalRealData(`store_settings_${settings.vendor_id}`, settings);
+    if (typeof localStorage !== 'undefined') {
+      safeLocalStorageSetItem('nexus_store_settings', JSON.stringify(settings));
+    }
+    return settings;
   }
 };
 
@@ -1015,7 +1360,7 @@ export const syncLocalDataToSupabase = async (): Promise<{ success: boolean; mes
  */
 export const generateSupabaseSQLSchema = (): string => {
   return `-- =============================================================================
--- NEXUS BIM MARKETPLACE - SCRIPT OFFICIEL DE MIGRATION SUPABASE
+-- NEXUS BIM MARKETPLACE - SCRIPT OFFICIEL DE MIGRATION SUPABASE (MODE PRODUCTION)
 -- Projet ID: lfndoimqzxvqsosxgeys
 -- URL: https://lfndoimqzxvqsosxgeys.supabase.co
 -- À exécuter dans : https://supabase.com/dashboard/project/lfndoimqzxvqsosxgeys/sql/new
@@ -1024,7 +1369,9 @@ export const generateSupabaseSQLSchema = (): string => {
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+-- =============================================================================
 -- 1. TABLE DES PROFILS UTILISATEURS (MULTI-VENDEURS, CLIENTS, SUPERADMINS)
+-- =============================================================================
 CREATE TABLE IF NOT EXISTS public.profiles (
   id TEXT PRIMARY KEY,
   username TEXT UNIQUE,
@@ -1041,20 +1388,24 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   address TEXT,
   contact_email TEXT,
   banner_url TEXT DEFAULT 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200',
+  website_url TEXT,
   is_super_admin BOOLEAN DEFAULT FALSE,
   status TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'pending')) DEFAULT 'active',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. TABLE DES BOUTIQUES VENDEURS (PARAMÈTRES ATELIER & COORDONNÉES)
+-- =============================================================================
+-- 2. TABLE DES BOUTIQUES VENDEURS (PARAMÈTRES ATELIER, LOGO, BANNIÈRE & LIEN UNIQUE)
+-- =============================================================================
 CREATE TABLE IF NOT EXISTS public.vendor_stores (
-  vendor_id TEXT PRIMARY KEY,
+  vendor_id TEXT PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
   store_name TEXT NOT NULL,
+  store_slug TEXT UNIQUE NOT NULL,
   tagline TEXT,
   bio TEXT,
-  banner_url TEXT,
-  logo_url TEXT,
+  banner_url TEXT DEFAULT 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200',
+  logo_url TEXT DEFAULT 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200',
   primary_color TEXT DEFAULT '#2563eb',
   phone TEXT,
   whatsapp TEXT,
@@ -1063,11 +1414,15 @@ CREATE TABLE IF NOT EXISTS public.vendor_stores (
   website_url TEXT,
   linkedin_url TEXT,
   followers_count INTEGER DEFAULT 0,
+  rating NUMERIC(3,2) DEFAULT 5.0,
+  sales_count INTEGER DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =============================================================================
 -- 3. TABLE DES PRODUITS NUMÉRIQUES (MAQUETTES BIM, OBJETS 3D, PLUGINS, ETC.)
+-- =============================================================================
 CREATE TABLE IF NOT EXISTS public.products (
   id TEXT PRIMARY KEY,
   vendor_id TEXT NOT NULL,
@@ -1101,7 +1456,9 @@ CREATE TABLE IF NOT EXISTS public.products (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =============================================================================
 -- 4. TABLE DES COMMANDES CLIENTS (ACHATS MULTI-VENDEURS EN USD)
+-- =============================================================================
 CREATE TABLE IF NOT EXISTS public.orders (
   id TEXT PRIMARY KEY,
   customer_id TEXT NOT NULL,
@@ -1117,7 +1474,9 @@ CREATE TABLE IF NOT EXISTS public.orders (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =============================================================================
 -- 5. TABLE DES LIGNES DE COMMANDES (AVEC ISOLATION VENDEUR)
+-- =============================================================================
 CREATE TABLE IF NOT EXISTS public.order_items (
   id TEXT PRIMARY KEY,
   order_id TEXT NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
@@ -1132,7 +1491,9 @@ CREATE TABLE IF NOT EXISTS public.order_items (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =============================================================================
 -- 6. TABLE DES DEMANDES DE RETRAIT & PAIEMENTS VENDEURS (PAYOUTS)
+-- =============================================================================
 CREATE TABLE IF NOT EXISTS public.payout_requests (
   id TEXT PRIMARY KEY,
   vendor_id TEXT NOT NULL,
@@ -1149,7 +1510,9 @@ CREATE TABLE IF NOT EXISTS public.payout_requests (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =============================================================================
 -- 7. TABLE DES AVIS & ÉVALUATIONS CLIENTS
+-- =============================================================================
 CREATE TABLE IF NOT EXISTS public.reviews (
   id TEXT PRIMARY KEY,
   product_id TEXT NOT NULL,
@@ -1160,7 +1523,23 @@ CREATE TABLE IF NOT EXISTS public.reviews (
   date TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 8. COMPTE SUPER ADMINISTRATEUR PAR DÉFAUT
+-- =============================================================================
+-- 8. INDEX DE PERFORMANCE POUR RECHERCHE RAPIDE & ACCÈS DIRECT PAR LIEN
+-- =============================================================================
+CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles(role);
+CREATE INDEX IF NOT EXISTS idx_profiles_store_slug ON public.profiles(store_slug);
+CREATE INDEX IF NOT EXISTS idx_vendor_stores_slug ON public.vendor_stores(store_slug);
+CREATE INDEX IF NOT EXISTS idx_products_vendor_id ON public.products(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_products_vendor_slug ON public.products(vendor_slug);
+CREATE INDEX IF NOT EXISTS idx_products_category ON public.products(category);
+CREATE INDEX IF NOT EXISTS idx_products_software ON public.products(software);
+CREATE INDEX IF NOT EXISTS idx_products_status ON public.products(status);
+CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON public.orders(customer_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_vendor_slug ON public.order_items(vendor_slug);
+
+-- =============================================================================
+-- 9. COMPTE SUPER ADMINISTRATEUR PAR DÉFAUT
+-- =============================================================================
 INSERT INTO public.profiles (
   id, username, email, name, role, company, specialty, is_super_admin, status
 ) VALUES (
@@ -1171,7 +1550,9 @@ INSERT INTO public.profiles (
   is_super_admin = TRUE,
   status = 'active';
 
--- 9. ACTIVATION DU ROW LEVEL SECURITY (RLS)
+-- =============================================================================
+-- 10. ACTIVATION DU ROW LEVEL SECURITY (RLS)
+-- =============================================================================
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vendor_stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
@@ -1180,7 +1561,9 @@ ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payout_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reviews ENABLE ROW LEVEL SECURITY;
 
--- 10. POLITIQUES D'ACCÈS PERMISSIVES POUR APPLICATION CLIENT (ANON / PUBLIC)
+-- =============================================================================
+-- 11. POLITIQUES D'ACCÈS PERMISSIVES POUR APPLICATION CLIENT (ANON / PUBLIC)
+-- =============================================================================
 DROP POLICY IF EXISTS "Public Full Access Profiles" ON public.profiles;
 CREATE POLICY "Public Full Access Profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
 
@@ -1201,6 +1584,33 @@ CREATE POLICY "Public Full Access Payout Requests" ON public.payout_requests FOR
 
 DROP POLICY IF EXISTS "Public Full Access Reviews" ON public.reviews;
 CREATE POLICY "Public Full Access Reviews" ON public.reviews FOR ALL USING (true) WITH CHECK (true);
+
+-- =============================================================================
+-- 12. CONFIGURATION DU STORAGE SUPABASE (AVATARS, BANNIÈRES, FICHIERS)
+-- =============================================================================
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES 
+  ('avatars', 'avatars', true, 10485760, ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml', 'image/gif']),
+  ('banners', 'banners', true, 15728640, ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']),
+  ('products', 'products', true, 104857600, NULL),
+  ('nexus-assets', 'nexus-assets', true, 104857600, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+DROP POLICY IF EXISTS "Public Access Storage" ON storage.objects;
+CREATE POLICY "Public Access Storage" ON storage.objects FOR SELECT 
+USING (bucket_id IN ('avatars', 'banners', 'products', 'nexus-assets'));
+
+DROP POLICY IF EXISTS "Public Insert Storage" ON storage.objects;
+CREATE POLICY "Public Insert Storage" ON storage.objects FOR INSERT 
+WITH CHECK (bucket_id IN ('avatars', 'banners', 'products', 'nexus-assets'));
+
+DROP POLICY IF EXISTS "Public Update Storage" ON storage.objects;
+CREATE POLICY "Public Update Storage" ON storage.objects FOR UPDATE 
+USING (bucket_id IN ('avatars', 'banners', 'products', 'nexus-assets'));
+
+DROP POLICY IF EXISTS "Public Delete Storage" ON storage.objects;
+CREATE POLICY "Public Delete Storage" ON storage.objects FOR DELETE 
+USING (bucket_id IN ('avatars', 'banners', 'products', 'nexus-assets'));
 `;
 };
 

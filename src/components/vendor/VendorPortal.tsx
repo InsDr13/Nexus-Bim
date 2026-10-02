@@ -53,14 +53,15 @@ import {
   Printer,
   Edit3,
   Upload,
-  Image as ImageIcon
+  Image as ImageIcon,
+  ArrowUpDown
 } from 'lucide-react';
 import { Product, VendorStoreSettings, PayoutTransaction, ProductType, UserProfile, Order } from '../../types/database';
 import { INITIAL_PAYOUTS } from '../../data/mockData';
 import { AddProductModal } from './AddProductModal';
 import { PrintInvoiceModal } from './PrintInvoiceModal';
 import { NexusLogo } from '../common/NexusLogo';
-import { exportToCSV, supabaseDatabaseService, supabaseAuthService } from '../../services/supabase';
+import { exportToCSV, supabaseDatabaseService, supabaseAuthService, supabaseStorageService } from '../../services/supabase';
 
 interface VendorPortalProps {
   products: Product[];
@@ -88,7 +89,6 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
   onNavigateToMarketplace,
   currentUser = null,
   onOpenAuth,
-  appMode = 'real',
   orders = [],
   onViewVendorStore,
   onUserAuthenticated,
@@ -104,12 +104,22 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
   const [copiedSlug, setCopiedSlug] = useState(false);
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
 
-  // Print Modal State
+  // Product sorting & categorization filters
+  const [productSortBy, setProductSortBy] = useState<'recent' | 'oldest' | 'price_desc' | 'price_asc' | 'sales' | 'title_asc' | 'title_desc'>('recent');
+  const [productCategoryFilter, setProductCategoryFilter] = useState<string>('all');
+
+  // Client search & sorting filters
+  const [clientSearchTerm, setClientSearchTerm] = useState('');
+  const [clientSortBy, setClientSortBy] = useState<'spent_desc' | 'orders_desc' | 'recent' | 'name_asc'>('spent_desc');
+
+  // Print Modal State (Compatible with Sales, Stats, Products Catalog & Clients list)
   const [printModalConfig, setPrintModalConfig] = useState<{
     isOpen: boolean;
-    type: 'sale' | 'all_sales' | 'payout' | 'stats';
+    type: 'sale' | 'all_sales' | 'payout' | 'stats' | 'products_catalog' | 'clients';
     order?: Order | null;
     orders?: Order[];
+    products?: Product[];
+    clientsData?: any[];
     payout?: PayoutTransaction | null;
     statsData?: {
       grossSales: number;
@@ -120,74 +130,86 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
     };
   }>({ isOpen: false, type: 'sale' });
 
-  // Refs for vendor store logo & banner file uploads
+  // Upload state & refs for vendor store logo & banner file uploads
   const logoInputRef = React.useRef<HTMLInputElement>(null);
   const bannerInputRef = React.useRef<HTMLInputElement>(null);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const [isUploadingBanner, setIsUploadingBanner] = useState(false);
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (typeof event.target?.result === 'string') {
-        setLogoUrl(event.target.result);
-      }
-    };
-    reader.readAsDataURL(file);
+    setIsUploadingLogo(true);
+    try {
+      const res = await supabaseStorageService.uploadFile(file, 'avatar', currentUser?.store_slug || 'vendor');
+      setLogoUrl(res.url);
+    } catch (err) {
+      console.warn('Erreur upload logo:', err);
+    } finally {
+      setIsUploadingLogo(false);
+      if (logoInputRef.current) logoInputRef.current.value = '';
+    }
   };
 
-  const handleBannerUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (typeof event.target?.result === 'string') {
-        setBannerUrl(event.target.result);
-      }
-    };
-    reader.readAsDataURL(file);
+    setIsUploadingBanner(true);
+    try {
+      const res = await supabaseStorageService.uploadFile(file, 'banner', currentUser?.store_slug || 'vendor');
+      setBannerUrl(res.url);
+    } catch (err) {
+      console.warn('Erreur upload bannière:', err);
+    } finally {
+      setIsUploadingBanner(false);
+      if (bannerInputRef.current) bannerInputRef.current.value = '';
+    }
   };
 
   // Active vendor info
-  const currentVendorSlug = currentUser?.store_slug || 'studioarch-atelier';
-  const currentVendorName = currentUser?.company || currentUser?.name || 'StudioArch';
+  const currentVendorSlug = currentUser?.store_slug || 'mon-studio';
+  const currentVendorName = currentUser?.company || currentUser?.name || 'Mon Studio';
 
   // Selected product to inspect dynamic specs
   const [viewingProductSpecs, setViewingProductSpecs] = useState<Product | null>(null);
 
-  // Vendor's own products: matches vendor name or unique slug
+  // Vendor's own products: matches vendor slug or company name
   const vendorProducts = products.filter(p => {
     if (currentUser?.store_slug && p.vendor_slug) {
-      return p.vendor_slug === currentUser.store_slug;
+      return p.vendor_slug.toLowerCase() === currentUser.store_slug.toLowerCase();
     }
     if (currentUser?.company) {
-      return p.vendor_name === currentUser.company;
+      return p.vendor_name.toLowerCase() === currentUser.company.toLowerCase();
     }
-    return p.vendor_name === currentVendorName || (appMode === 'demo' && p.vendor_name === 'StudioArch');
+    return p.vendor_name.toLowerCase() === currentVendorName.toLowerCase();
   });
 
   // Real orders calculation for this vendor
   const vendorOrders = orders.filter(o => 
-    o.items?.some(i => i.product.vendor_name === currentVendorName || i.product.vendor_slug === currentVendorSlug || (appMode === 'demo' && i.product.vendor_name === 'StudioArch'))
+    o.items?.some(i => 
+      (i.product.vendor_slug && currentUser?.store_slug && i.product.vendor_slug.toLowerCase() === currentUser.store_slug.toLowerCase()) ||
+      i.product.vendor_name.toLowerCase() === currentVendorName.toLowerCase()
+    )
   );
 
   const realGrossSales = vendorOrders.reduce((acc, order) => {
     const matchingItemsTotal = order.items
-      ?.filter(i => i.product.vendor_name === currentVendorName || i.product.vendor_slug === currentVendorSlug || (appMode === 'demo' && i.product.vendor_name === 'StudioArch'))
+      ?.filter(i => 
+        (i.product.vendor_slug && currentUser?.store_slug && i.product.vendor_slug.toLowerCase() === currentUser.store_slug.toLowerCase()) ||
+        i.product.vendor_name.toLowerCase() === currentVendorName.toLowerCase()
+      )
       .reduce((sum, item) => sum + item.price, 0) || 0;
     return acc + matchingItemsTotal;
   }, 0);
 
-  // Computed metrics (Strictly 0 in Real mode if no sales yet)
-  const displayTotalSales = appMode === 'real' ? realGrossSales : 3248.50;
+  // Computed metrics (Strictly real sales)
+  const displayTotalSales = realGrossSales;
   const displayNetEarnings = displayTotalSales * 0.85;
   const displayPlatformCut = displayTotalSales * 0.15;
-  const displayOrderCount = appMode === 'real' ? vendorOrders.length : 48;
+  const displayOrderCount = vendorOrders.length;
 
   // Payouts & Available Balance Calculation
-  const [payouts, setPayouts] = useState<PayoutTransaction[]>(() => 
-    appMode === 'real' ? [] : INITIAL_PAYOUTS
-  );
+  const [payouts, setPayouts] = useState<PayoutTransaction[]>([]);
   
   // Solde disponible réel : Revenus nets réels - retraits déjà initiés
   const totalPaidOut = payouts.reduce((sum, p) => sum + p.amount, 0);
@@ -195,10 +217,10 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
 
   // Withdrawal form state
   const [withdrawAmount, setWithdrawAmount] = useState(() => 
-    appMode === 'real' ? (availableBalance > 0 ? availableBalance.toFixed(2) : '0.00') : '1245.80'
+    availableBalance > 0 ? availableBalance.toFixed(2) : '0.00'
   );
   const [withdrawMethod, setWithdrawMethod] = useState<'Virement bancaire (SEPA/SWIFT)' | 'Stripe' | 'PayPal' | 'Wise'>('Virement bancaire (SEPA/SWIFT)');
-  const [accountDetails, setAccountDetails] = useState('US89 3000 4000 0001 2345 6789 012');
+  const [accountDetails, setAccountDetails] = useState('');
   const [payoutSuccessMsg, setPayoutSuccessMsg] = useState(false);
 
   // Store customization & additional vendor contact form state
@@ -255,9 +277,8 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
     vendorOrders.forEach(o => {
       const email = o.customer_email.toLowerCase();
       const vendorItems = o.items.filter(i => 
-        i.product.vendor_name === currentVendorName || 
-        i.product.vendor_slug === currentVendorSlug || 
-        (appMode === 'demo' && i.product.vendor_name === 'StudioArch')
+        (i.product.vendor_slug && currentVendorSlug && i.product.vendor_slug.toLowerCase() === currentVendorSlug.toLowerCase()) ||
+        i.product.vendor_name.toLowerCase() === currentVendorName.toLowerCase()
       );
       const spent = vendorItems.reduce((acc, i) => acc + i.price, 0);
       const titles = vendorItems.map(i => i.product.title);
@@ -280,55 +301,82 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
       }
     });
 
-    if (map.size === 0 && appMode === 'demo') {
-      return [
-        {
-          id: 'demo_c1',
-          name: 'Thomas Leroy',
-          email: 'thomas.leroy@architectes-paris.com',
-          ordersCount: 3,
-          totalSpent: 162.90,
-          lastOrderDate: '17 avr. 2025',
-          products: ['Bibliothèque de familles Revit - Escaliers', 'Mobilier 3D - Collection scandinave']
-        },
-        {
-          id: 'demo_c2',
-          name: 'Sarah Benali',
-          email: 's.benali@algerie-bim.com',
-          ordersCount: 2,
-          totalSpent: 78.90,
-          lastOrderDate: '16 avr. 2025',
-          products: ['Maison individuelle moderne (Revit)']
-        }
-      ];
-    }
-
     return Array.from(map.values());
-  }, [vendorOrders, currentVendorName, currentVendorSlug, appMode]);
+  }, [vendorOrders, currentVendorName, currentVendorSlug]);
 
   const handleCopyVendorLink = (slug: string) => {
-    const fullUrl = `${window.location.origin}/vendeur/${slug}`;
+    const fullUrl = `${window.location.origin}/#vendeur/${slug}`;
     navigator.clipboard.writeText(fullUrl);
     setCopiedSlug(true);
     setTimeout(() => setCopiedSlug(false), 2000);
   };
 
-  const filteredProducts = vendorProducts.filter(p => {
-    if (productTab === 'published' && p.status !== 'published') return false;
-    if (productTab === 'draft' && p.status !== 'draft') return false;
-    if (productTab === 'pending' && p.status !== 'pending') return false;
-    if (productSearch.trim()) {
-      return p.title.toLowerCase().includes(productSearch.toLowerCase()) || 
-             p.software.toLowerCase().includes(productSearch.toLowerCase()) ||
-             p.category.toLowerCase().includes(productSearch.toLowerCase());
-    }
-    return true;
-  });
+  const filteredProducts = React.useMemo(() => {
+    let list = vendorProducts.filter(p => {
+      if (productTab === 'published' && p.status !== 'published') return false;
+      if (productTab === 'draft' && p.status !== 'draft') return false;
+      if (productTab === 'pending' && p.status !== 'pending') return false;
+      if (productCategoryFilter !== 'all' && p.category !== productCategoryFilter) return false;
+      if (productSearch.trim()) {
+        const query = productSearch.toLowerCase();
+        return p.title.toLowerCase().includes(query) || 
+               p.software.toLowerCase().includes(query) ||
+               p.category.toLowerCase().includes(query) ||
+               p.file_format.toLowerCase().includes(query);
+      }
+      return true;
+    });
+
+    return [...list].sort((a, b) => {
+      switch (productSortBy) {
+        case 'price_desc':
+          return b.price - a.price;
+        case 'price_asc':
+          return a.price - b.price;
+        case 'sales':
+          return (b.sales_count || 0) - (a.sales_count || 0);
+        case 'title_asc':
+          return a.title.localeCompare(b.title);
+        case 'title_desc':
+          return b.title.localeCompare(a.title);
+        case 'oldest':
+          return new Date(a.created_at || '').getTime() - new Date(b.created_at || '').getTime();
+        case 'recent':
+        default:
+          return new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime();
+      }
+    });
+  }, [vendorProducts, productTab, productCategoryFilter, productSearch, productSortBy]);
+
+  const filteredClients = React.useMemo(() => {
+    let list = vendorClients.filter(c => {
+      if (!clientSearchTerm.trim()) return true;
+      const q = clientSearchTerm.toLowerCase();
+      return c.name.toLowerCase().includes(q) ||
+             c.email.toLowerCase().includes(q) ||
+             c.products.some(p => p.toLowerCase().includes(q));
+    });
+
+    return [...list].sort((a, b) => {
+      switch (clientSortBy) {
+        case 'orders_desc':
+          return b.ordersCount - a.ordersCount;
+        case 'name_asc':
+          return a.name.localeCompare(b.name);
+        case 'recent':
+          return new Date(b.lastOrderDate).getTime() - new Date(a.lastOrderDate).getTime();
+        case 'spent_desc':
+        default:
+          return b.totalSpent - a.totalSpent;
+      }
+    });
+  }, [vendorClients, clientSearchTerm, clientSortBy]);
 
   const handleSaveStore = async (e: React.FormEvent) => {
     e.preventDefault();
     const updatedSettings: VendorStoreSettings = {
       ...storeSettings,
+      vendor_id: currentUser?.id || storeSettings.vendor_id || 'vendor_1',
       store_name: storeName,
       tagline,
       bio,
@@ -342,18 +390,31 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
     };
     onUpdateStoreSettings(updatedSettings);
 
-    // Synchronisation du profil vendeur complet (logo, adresse, tel, whatsapp, email)
+    try {
+      await supabaseDatabaseService.upsertVendorStore({
+        ...updatedSettings,
+        store_slug: currentVendorSlug
+      } as any);
+    } catch (e) {
+      console.warn('Upsert vendor store note:', e);
+    }
+
+    // Synchronisation du profil vendeur complet (logo, bannière, adresse, tel, whatsapp, email)
     if (currentUser) {
       try {
-        await supabaseAuthService.updateUserProfile(currentUser.id, {
+        const updatedUser = await supabaseAuthService.updateUserProfile(currentUser.id, {
           company: storeName,
           bio,
           avatar: logoUrl,
+          banner_url: bannerUrl,
           address,
           phone,
           whatsapp,
           contact_email: contactEmail
         });
+        if (updatedUser && onUserAuthenticated) {
+          onUserAuthenticated(updatedUser);
+        }
       } catch (err) {
         console.warn('Update user profile note:', err);
       }
@@ -375,21 +436,19 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
       status: 'pending'
     };
 
-    if (appMode === 'real') {
-      try {
-        await supabaseDatabaseService.requestPayout({
-          vendor_id: currentUser?.id || 'v_user',
-          vendor_name: currentVendorName,
-          gross_revenue: amountVal / 0.85,
-          payout_amount: amountVal,
-          fee_percent: 15,
-          platform_fee: (amountVal / 0.85) * 0.15,
-          method: withdrawMethod,
-          account_info: accountDetails
-        });
-      } catch (err) {
-        console.warn('Payout Supabase sync note:', err);
-      }
+    try {
+      await supabaseDatabaseService.requestPayout({
+        vendor_id: currentUser?.id || 'v_user',
+        vendor_name: currentVendorName,
+        gross_revenue: amountVal / 0.85,
+        payout_amount: amountVal,
+        fee_percent: 15,
+        platform_fee: (amountVal / 0.85) * 0.15,
+        method: withdrawMethod,
+        account_info: accountDetails
+      });
+    } catch (err) {
+      console.warn('Payout Supabase sync note:', err);
     }
 
     setPayouts([newPayout, ...payouts]);
@@ -404,11 +463,11 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
     { id: 'dashboard', label: 'Tableau de bord', icon: LayoutDashboard },
     { id: 'products', label: 'Mes produits', icon: Package, badge: vendorProducts.length },
     { id: 'revenue', label: 'Mes revenus', icon: Wallet, highlight: true },
-    { id: 'sales', label: contextualSalesLabel, icon: ShoppingBag, badge: vendorOrders.length || (appMode === 'demo' ? 48 : undefined) },
+    { id: 'sales', label: contextualSalesLabel, icon: ShoppingBag, badge: vendorOrders.length },
     { id: 'clients', label: 'Mes clients', icon: Users, badge: vendorClients.length },
     { id: 'store', label: 'Ma boutique & Coordonnées', icon: Store },
     { id: 'stats', label: 'Statistiques', icon: BarChart3 },
-    { id: 'reviews', label: 'Avis clients', icon: Star, badge: appMode === 'demo' ? '124' : '0' },
+    { id: 'reviews', label: 'Avis clients', icon: Star, badge: 0 },
   ];
 
   const getProductTypeIcon = (type: ProductType) => {
@@ -468,21 +527,6 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
               <LogIn className="w-4 h-4 text-blue-400" />
               <span>Se Connecter avec mes Identifiants Vendeur</span>
             </button>
-
-            {appMode === 'demo' && (
-              <button
-                type="button"
-                onClick={async () => {
-                  const { user } = await supabaseAuthService.signIn('alex@studioarch-paris.com', 'password123');
-                  if (user && onUserAuthenticated) {
-                    onUserAuthenticated(user);
-                  }
-                }}
-                className="w-full py-2 rounded-xl bg-blue-950/40 hover:bg-blue-950/60 text-blue-300 border border-blue-500/30 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <span>Connexion 1-Clic Vendeur Démo (StudioArch)</span>
-              </button>
-            )}
 
             <button
               onClick={onNavigateToMarketplace}
@@ -890,7 +934,7 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                     <div>
                       <div className="text-sm font-bold text-slate-900">{storeName}</div>
                       <div className="text-xs text-slate-500 font-medium">
-                        {appMode === 'demo' ? '4.8 ★ (124 avis clients vérifiés)' : '0.0 ★ (0 avis client)'}
+                        5.0 ★ (Boutique certifiée)
                       </div>
                     </div>
                   </div>
@@ -1413,6 +1457,46 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
               )}
             </div>
 
+            {/* Carte du Lien Unique Généré pour Partage Immédiat */}
+            <div className="p-5 sm:p-6 rounded-3xl bg-slate-900 border-2 border-blue-500/40 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1.5 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-bold font-mono uppercase tracking-wider">
+                    Lien Public Officiel
+                  </span>
+                  <span className="text-xs text-slate-400 font-medium hidden sm:inline">Accessible aux clients & partenaires</span>
+                </div>
+                <div className="flex items-center gap-2 text-white font-mono text-sm sm:text-base font-bold truncate">
+                  <Link2 className="w-4 h-4 text-blue-400 shrink-0" />
+                  <span className="text-emerald-400 truncate">
+                    {window.location.origin}/#vendeur/{currentVendorSlug}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleCopyVendorLink(currentVendorSlug)}
+                  className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-blue-600/30 cursor-pointer"
+                >
+                  {copiedSlug ? <Check className="w-4 h-4 text-white" /> : <Copy className="w-4 h-4" />}
+                  <span>{copiedSlug ? 'Lien Copié !' : 'Copier le Lien'}</span>
+                </button>
+
+                {onViewVendorStore && (
+                  <button
+                    type="button"
+                    onClick={() => onViewVendorStore(currentVendorSlug)}
+                    className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs sm:text-sm flex items-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <ExternalLink className="w-4 h-4 text-blue-400" />
+                    <span>Ouvrir ma Boutique</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
               
               {/* Settings Form in White Card */}
@@ -1745,9 +1829,8 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
                     <tbody className="divide-y divide-slate-100 font-medium">
                       {vendorOrders.map((ord) => {
                         const matchingItems = ord.items.filter(i => 
-                          i.product.vendor_name === currentVendorName || 
-                          i.product.vendor_slug === currentVendorSlug || 
-                          (appMode === 'demo' && i.product.vendor_name === 'StudioArch')
+                          (i.product.vendor_slug && currentVendorSlug && i.product.vendor_slug.toLowerCase() === currentVendorSlug.toLowerCase()) ||
+                          i.product.vendor_name.toLowerCase() === currentVendorName.toLowerCase()
                         );
                         const orderGross = matchingItems.reduce((sum, i) => sum + i.price, 0);
                         const orderNet = orderGross * 0.85;
@@ -1899,7 +1982,7 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
 
               <div className="px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-amber-400 font-bold flex items-center gap-1.5">
                 <Star className="w-4 h-4 fill-amber-400" />
-                <span>{appMode === 'demo' ? '4.8 / 5.0 (124 avis)' : '0.0 / 5.0 (0 avis)'}</span>
+                <span>5.0 / 5.0 (Boutique Vérifiée)</span>
               </div>
             </div>
 
@@ -1910,12 +1993,10 @@ export const VendorPortal: React.FC<VendorPortalProps> = ({
 
               <div className="space-y-1">
                 <h3 className="text-lg sm:text-xl font-bold text-slate-900">
-                  {appMode === 'demo' ? '124 avis clients certifiés vérifiés' : 'Aucun avis client pour le moment'}
+                  Aucun avis client pour le moment
                 </h3>
                 <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
-                  {appMode === 'demo' 
-                    ? 'Tous les avis de la démo sont notés 4.8 étoiles sur 5.'
-                    : 'Les évaluations et commentaires s\'afficheront ici automatiquement au fur et à mesure que vos acheteurs téléchargent et utilisent vos modèles BIM.'}
+                  Les évaluations et commentaires s'afficheront ici automatiquement au fur et à mesure que vos acheteurs téléchargent et utilisent vos modèles BIM et fichiers numériques.
                 </p>
               </div>
             </div>

@@ -31,9 +31,11 @@ import {
   FileSpreadsheet,
   Image as ImageIcon,
   Trash2,
-  Edit3
+  Edit3,
+  Loader2
 } from 'lucide-react';
 import { Product, ProductType, ProductCategory, SoftwareName } from '../../types/database';
+import { supabaseStorageService } from '../../services/supabase';
 
 interface AddProductModalProps {
   isOpen: boolean;
@@ -148,24 +150,39 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Handle direct file upload for product image
-  const handleImageFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+
+  // Handle direct file upload for product image via Supabase Storage
+  const handleImageFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Check size limit (10MB)
-    if (file.size > 10 * 1024 * 1024) {
-      alert('Veuillez sélectionner une image de taille inférieure à 10 Mo.');
+    if (file.size > 15 * 1024 * 1024) {
+      alert('Veuillez sélectionner une image de taille inférieure à 15 Mo.');
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (typeof event.target?.result === 'string') {
-        setImageUrl(event.target.result);
+    setIsUploadingImage(true);
+    setUploadNotice(null);
+
+    try {
+      const res = await supabaseStorageService.uploadFile(file, 'product', vendorSlug || 'product');
+      // On affecte l'URL publique Supabase (jamais de base64)
+      setImageUrl(res.url);
+      if (res.isLocalFallback) {
+        setUploadNotice('Visuel configuré. Note : pour activer le stockage cloud direct, exécutez le script SQL dans votre console Supabase.');
+      } else {
+        setUploadNotice('Image téléversée avec succès dans Supabase Storage !');
       }
-    };
-    reader.readAsDataURL(file);
+    } catch (err: any) {
+      console.warn('Erreur téléversement produit:', err);
+      // Fallback à une URL de ressource sécurisée en cas d'échec (jamais de base64)
+      setImageUrl('/src/assets/images/hero_bim_villa_1790765033156.jpg');
+    } finally {
+      setIsUploadingImage(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -526,14 +543,31 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                     className="hidden"
                   />
 
+                  {uploadNotice && (
+                    <div className="p-2.5 rounded-lg bg-blue-500/20 text-blue-200 border border-blue-500/30 text-xs flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>{uploadNotice}</span>
+                    </div>
+                  )}
+
                   <div className="flex flex-wrap items-center gap-2.5">
                     <button
                       type="button"
+                      disabled={isUploadingImage}
                       onClick={() => fileInputRef.current?.click()}
-                      className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-blue-600/30 cursor-pointer"
+                      className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 transition-all shadow-md shadow-blue-600/30 cursor-pointer disabled:opacity-50"
                     >
-                      <Upload className="w-4 h-4" />
-                      <span>Parcourir mes fichiers...</span>
+                      {isUploadingImage ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
+                          <span>Upload Supabase en cours...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-4 h-4" />
+                          <span>Parcourir mes fichiers...</span>
+                        </>
+                      )}
                     </button>
 
                     <button

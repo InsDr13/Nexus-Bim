@@ -56,8 +56,6 @@ interface MarketplaceViewProps {
   onNavigateToClient: () => void;
   onViewVendorStore: (vendorName: string) => void;
   onNavigateToLanding?: () => void;
-  appMode?: 'real' | 'demo';
-  onToggleAppMode?: (mode: 'real' | 'demo') => void;
   onOpenAuth?: (mode?: 'login' | 'signup_vendor' | 'signup_customer') => void;
 }
 
@@ -71,8 +69,6 @@ export const MarketplaceView: React.FC<MarketplaceViewProps> = ({
   onNavigateToClient,
   onViewVendorStore,
   onNavigateToLanding,
-  appMode = 'real',
-  onToggleAppMode,
   onOpenAuth,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -846,16 +842,6 @@ export const MarketplaceView: React.FC<MarketplaceViewProps> = ({
                     <Plus className="w-4 h-4" />
                     <span>Créer Compte Vendeur & Publier</span>
                   </button>
-
-                  {onToggleAppMode && (
-                    <button
-                      onClick={() => onToggleAppMode('demo')}
-                      className="w-full sm:w-auto px-5 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-semibold border border-slate-700 transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Sparkles className="w-4 h-4 text-blue-400" />
-                      <span>Consulter le Mode Démo</span>
-                    </button>
-                  )}
                 </div>
               </div>
             ) : filteredProducts.length === 0 ? (

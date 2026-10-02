@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { 
   Database, 
   CheckCircle2, 
@@ -6,7 +6,6 @@ import {
   ChevronUp, 
   Copy, 
   Check, 
-  Sparkles, 
   ShieldCheck, 
   Activity, 
   ExternalLink,
@@ -16,9 +15,7 @@ import {
 import { 
   getSupabaseConfig, 
   testSupabaseConnection, 
-  generateSupabaseSQLSchema, 
-  getAppMode, 
-  setAppMode 
+  generateSupabaseSQLSchema 
 } from '../../services/supabase';
 
 interface SupabaseStatusBannerProps {
@@ -28,8 +25,6 @@ interface SupabaseStatusBannerProps {
 }
 
 export const SupabaseStatusBanner: React.FC<SupabaseStatusBannerProps> = ({
-  appMode: propAppMode,
-  onModeChange,
   onOpenSqlModal
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -37,7 +32,6 @@ export const SupabaseStatusBanner: React.FC<SupabaseStatusBannerProps> = ({
   const [isTesting, setIsTesting] = useState(false);
   const [pingResult, setPingResult] = useState<{ success: boolean; message: string; latencyMs?: number } | null>(null);
   
-  const currentMode = propAppMode || getAppMode();
   const config = getSupabaseConfig();
 
   const handleTestPing = async () => {
@@ -53,32 +47,16 @@ export const SupabaseStatusBanner: React.FC<SupabaseStatusBannerProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleToggleMode = (newMode: 'real' | 'demo') => {
-    setAppMode(newMode);
-    if (onModeChange) onModeChange(newMode);
-  };
-
   return (
-    <div className={`border-b text-xs transition-colors duration-200 ${
-      currentMode === 'real'
-        ? 'bg-[#09101f] border-emerald-500/30'
-        : 'bg-[#0f172a] border-blue-500/20'
-    }`}>
+    <div className="border-b text-xs transition-colors duration-200 bg-[#09101f] border-emerald-500/30">
       <div className="max-w-[1720px] mx-auto px-4 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-3">
         
         {/* Status Indicator & Project ID */}
         <div className="flex items-center gap-3">
-          {currentMode === 'real' ? (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span>MODE RÉEL : Supabase Connecté</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30 font-bold">
-              <Sparkles className="w-3.5 h-3.5 text-blue-400" />
-              <span>MODE DÉMO (Données d'exemple)</span>
-            </div>
-          )}
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>MODE PRODUCTION : Supabase Connecté</span>
+          </div>
 
           <div className="hidden sm:flex items-center gap-2 text-slate-300 font-mono text-[11px]">
             <span className="text-slate-500">Projet :</span>
@@ -90,124 +68,121 @@ export const SupabaseStatusBanner: React.FC<SupabaseStatusBannerProps> = ({
           </div>
         </div>
 
-        {/* Right Controls: Mode Toggle & Details Drawer */}
+        {/* Right Controls: Ping Test & SQL Migration */}
         <div className="flex items-center gap-3">
-          
-          {/* Mode Switcher Pill */}
-          <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800">
-            <button
-              onClick={() => handleToggleMode('real')}
-              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${
-                currentMode === 'real'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Mode Réel
-            </button>
-            <button
-              onClick={() => handleToggleMode('demo')}
-              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all ${
-                currentMode === 'demo'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Mode Démo
-            </button>
-          </div>
-
           {/* Quick Ping Test */}
           <button
             onClick={handleTestPing}
             disabled={isTesting}
-            className="hidden md:flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-[11px] font-semibold transition-colors"
-            title="Tester la latence PostgREST avec le projet Supabase"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition-colors cursor-pointer text-[11px] font-medium"
+            title="Tester la connexion en direct avec le cluster Supabase"
           >
-            <Activity className={`w-3 h-3 ${isTesting ? 'animate-spin text-amber-400' : 'text-emerald-400'}`} />
-            <span>{isTesting ? 'Test...' : pingResult?.latencyMs ? `${pingResult.latencyMs} ms` : 'Test Ping'}</span>
+            <Activity className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin text-emerald-400' : 'text-slate-400'}`} />
+            <span>{isTesting ? 'Test...' : 'Tester la Connectivité'}</span>
           </button>
 
-          {/* Expand Details */}
+          {/* Quick SQL modal or copy */}
+          <button
+            onClick={onOpenSqlModal ? onOpenSqlModal : copySql}
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-400 border border-emerald-500/30 transition-colors cursor-pointer text-[11px] font-bold"
+          >
+            <Database className="w-3.5 h-3.5" />
+            <span>Schéma & Migration SQL</span>
+          </button>
+
+          {/* Toggle Details Panel */}
           <button
             onClick={() => setIsOpen(!isOpen)}
-            className="flex items-center gap-1 text-slate-300 hover:text-white font-medium transition-colors text-xs"
+            className="flex items-center gap-1 px-2 py-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-900 transition-colors cursor-pointer text-[11px]"
           >
-            <span>Détails BD</span>
+            <span>Détails Base</span>
             {isOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
         </div>
 
       </div>
 
-      {/* Expanded Accordion Details */}
+      {/* Ping Result Notification Toast */}
+      {pingResult && (
+        <div className={`px-4 sm:px-6 py-1.5 text-center text-[11px] font-medium border-t transition-all ${
+          pingResult.success 
+            ? 'bg-emerald-950/60 border-emerald-500/30 text-emerald-300' 
+            : 'bg-rose-950/60 border-rose-500/30 text-rose-300'
+        }`}>
+          {pingResult.message}
+        </div>
+      )}
+
+      {/* Collapsible Details Drawer */}
       {isOpen && (
-        <div className="border-t border-slate-800 bg-[#060a14] p-4 text-slate-300 animate-fadeIn">
-          <div className="max-w-[1720px] mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-[#060a14] border-t border-slate-800/80 px-4 sm:px-6 py-4 animate-fadeIn">
+          <div className="max-w-[1720px] mx-auto space-y-4">
             
-            {/* Column 1: Config details */}
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-white font-semibold text-sm">
-                <Database className="w-4 h-4 text-emerald-400" />
-                <span>Instance Supabase Active</span>
-              </div>
-              <p className="text-slate-400 text-xs leading-relaxed">
-                Connecté directement à votre projet Supabase avec persistance PostgreSQL et gestion des rôles (Vendeur avec slug unique, Client, Super Admin).
-              </p>
-              <div className="bg-slate-900 rounded-xl p-3 border border-slate-800 font-mono text-[11px] space-y-1.5">
-                <div className="text-slate-400">URL : <span className="text-emerald-400">{config.url}</span></div>
-                <div className="text-slate-400 truncate">Clé Publique : <span className="text-blue-300">{config.anonKey.slice(0, 24)}...</span></div>
-                <div className="text-slate-400">Mode actuel : <span className={currentMode === 'real' ? 'text-emerald-400 font-bold' : 'text-blue-400 font-bold'}>{currentMode === 'real' ? 'Réel (Enregistrements BD actifs)' : 'Démo (Données d\'exemple)'}</span></div>
-              </div>
-            </div>
-
-            {/* Column 2: Architecture Highlights */}
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-white font-semibold text-sm">
-                <ShieldCheck className="w-4 h-4 text-blue-400" />
-                <span>Fonctionnalités Activées</span>
-              </div>
-              <ul className="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
-                <li><strong className="text-slate-200">Liens uniques Vendeur</strong> : Format <code className="text-blue-300 font-mono">vendeur/nom-unique</code>.</li>
-                <li><strong className="text-slate-200">Création compte vendeur</strong> : Email, mot de passe, nom du studio et slug unique.</li>
-                <li><strong className="text-slate-200">Inscription client au panier</strong> : Création de compte obligatoire avant paiement.</li>
-                <li><strong className="text-slate-200">Super Admin</strong> : Ajout d'administrateurs avec gestion des droits dans Supabase.</li>
-                <li><strong className="text-slate-200">Statistiques Vendeur</strong> : Ventes réelles, part créateur 85% et demandes de virement.</li>
-              </ul>
-            </div>
-
-            {/* Column 3: SQL Script Generator */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-white font-semibold text-sm">
-                  <Layers className="w-4 h-4 text-emerald-400" />
-                  <span>Schéma SQL PostgreSQL</span>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              
+              {/* Box 1: Infos Projet */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
+                <div className="flex items-center gap-2 text-white font-bold text-xs">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span>Instance Supabase Active</span>
                 </div>
-                <button
-                  onClick={copySql}
-                  className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 text-xs font-semibold flex items-center gap-1 transition-all"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copied ? 'Copié !' : 'Copier SQL'}</span>
-                </button>
+                <div className="space-y-1 text-[11px] text-slate-400 font-mono">
+                  <div>URL: <span className="text-slate-200">{config.url}</span></div>
+                  <div>Anon Key: <span className="text-slate-200">{config.anonKey.slice(0, 18)}...</span></div>
+                  <div>Région: <span className="text-emerald-400 font-bold">AWS eu-central / Production</span></div>
+                </div>
               </div>
-              <p className="text-slate-400 text-xs leading-relaxed">
-                Ce script crée les tables <code className="text-slate-300 font-mono">profiles</code>, <code className="text-slate-300 font-mono">products</code>, <code className="text-slate-300 font-mono">orders</code>, <code className="text-slate-300 font-mono">order_items</code>, <code className="text-slate-300 font-mono">payout_requests</code> avec RLS.
-              </p>
-              {onOpenSqlModal && (
-                <button
-                  onClick={onOpenSqlModal}
-                  className="w-full py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs text-blue-400 font-bold flex items-center justify-center gap-1.5 transition-colors"
-                >
-                  <span>Afficher l'intégralité du script SQL</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              )}
+
+              {/* Box 2: Architecture Multi-Vendeurs */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
+                <div className="flex items-center gap-2 text-white font-bold text-xs">
+                  <Layers className="w-4 h-4 text-blue-400" />
+                  <span>Architecture Multi-Vendeurs</span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Tables PostgreSQL avec isolation par rôle : <code>profiles</code>, <code>vendor_stores</code>, <code>products</code>, <code>orders</code>, <code>order_items</code> et <code>payout_requests</code>.
+                </p>
+              </div>
+
+              {/* Box 3: Actions Rapides */}
+              <div className="p-3.5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2 flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white">Migration SQL</span>
+                  <a
+                    href="https://supabase.com/dashboard/project/lfndoimqzxvqsosxgeys/sql/new"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-semibold"
+                  >
+                    <span>Dashboard Supabase</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={copySql}
+                    className="flex-1 py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] flex items-center justify-center gap-1.5 shadow-md shadow-emerald-600/20"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copied ? 'Copié !' : 'Copier Script SQL'}</span>
+                  </button>
+                  {onOpenSqlModal && (
+                    <button
+                      onClick={onOpenSqlModal}
+                      className="py-1.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold"
+                    >
+                      Voir Script
+                    </button>
+                  )}
+                </div>
+              </div>
+
             </div>
 
           </div>
         </div>
       )}
+
     </div>
   );
 };

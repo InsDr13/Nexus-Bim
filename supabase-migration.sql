@@ -1,5 +1,5 @@
 -- =============================================================================
--- NEXUS BIM MARKETPLACE - SCRIPT OFFICIEL DE MIGRATION SUPABASE
+-- NEXUS BIM MARKETPLACE - SCRIPT OFFICIEL DE MIGRATION SUPABASE (MODE PRODUCTION)
 -- Projet ID: lfndoimqzxvqsosxgeys
 -- URL: https://lfndoimqzxvqsosxgeys.supabase.co
 -- À exécuter dans : https://supabase.com/dashboard/project/lfndoimqzxvqsosxgeys/sql/new
@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   address TEXT,
   contact_email TEXT,
   banner_url TEXT DEFAULT 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200',
+  website_url TEXT,
   is_super_admin BOOLEAN DEFAULT FALSE,
   status TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'pending')) DEFAULT 'active',
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -34,15 +35,16 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 );
 
 -- =============================================================================
--- 2. TABLE DES BOUTIQUES VENDEURS (PARAMÈTRES ATELIER & COORDONNÉES)
+-- 2. TABLE DES BOUTIQUES VENDEURS (PARAMÈTRES ATELIER, LOGO, BANNIÈRE & LIEN UNIQUE)
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS public.vendor_stores (
-  vendor_id TEXT PRIMARY KEY,
+  vendor_id TEXT PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
   store_name TEXT NOT NULL,
+  store_slug TEXT UNIQUE NOT NULL,
   tagline TEXT,
   bio TEXT,
-  banner_url TEXT,
-  logo_url TEXT,
+  banner_url TEXT DEFAULT 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&q=80&w=1200',
+  logo_url TEXT DEFAULT 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200',
   primary_color TEXT DEFAULT '#2563eb',
   phone TEXT,
   whatsapp TEXT,
@@ -51,6 +53,8 @@ CREATE TABLE IF NOT EXISTS public.vendor_stores (
   website_url TEXT,
   linkedin_url TEXT,
   followers_count INTEGER DEFAULT 0,
+  rating NUMERIC(3,2) DEFAULT 5.0,
+  sales_count INTEGER DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -159,7 +163,21 @@ CREATE TABLE IF NOT EXISTS public.reviews (
 );
 
 -- =============================================================================
--- 8. COMPTE SUPER ADMINISTRATEUR PAR DÉFAUT
+-- 8. INDEX DE PERFORMANCE POUR RECHERCHE RAPIDE & ACCÈS DIRECT PAR LIEN
+-- =============================================================================
+CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles(role);
+CREATE INDEX IF NOT EXISTS idx_profiles_store_slug ON public.profiles(store_slug);
+CREATE INDEX IF NOT EXISTS idx_vendor_stores_slug ON public.vendor_stores(store_slug);
+CREATE INDEX IF NOT EXISTS idx_products_vendor_id ON public.products(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_products_vendor_slug ON public.products(vendor_slug);
+CREATE INDEX IF NOT EXISTS idx_products_category ON public.products(category);
+CREATE INDEX IF NOT EXISTS idx_products_software ON public.products(software);
+CREATE INDEX IF NOT EXISTS idx_products_status ON public.products(status);
+CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON public.orders(customer_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_vendor_slug ON public.order_items(vendor_slug);
+
+-- =============================================================================
+-- 9. COMPTE SUPER ADMINISTRATEUR PAR DÉFAUT
 -- =============================================================================
 INSERT INTO public.profiles (
   id, username, email, name, role, company, specialty, is_super_admin, status
@@ -172,7 +190,7 @@ INSERT INTO public.profiles (
   status = 'active';
 
 -- =============================================================================
--- 9. ACTIVATION DU ROW LEVEL SECURITY (RLS)
+-- 10. ACTIVATION DU ROW LEVEL SECURITY (RLS)
 -- =============================================================================
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vendor_stores ENABLE ROW LEVEL SECURITY;
@@ -183,7 +201,7 @@ ALTER TABLE public.payout_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reviews ENABLE ROW LEVEL SECURITY;
 
 -- =============================================================================
--- 10. POLITIQUES D'ACCÈS PERMISSIVES POUR APPLICATION CLIENT (ANON / PUBLIC)
+-- 11. POLITIQUES D'ACCÈS PERMISSIVES POUR APPLICATION CLIENT (ANON / PUBLIC)
 -- =============================================================================
 DROP POLICY IF EXISTS "Public Full Access Profiles" ON public.profiles;
 CREATE POLICY "Public Full Access Profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
@@ -205,3 +223,34 @@ CREATE POLICY "Public Full Access Payout Requests" ON public.payout_requests FOR
 
 DROP POLICY IF EXISTS "Public Full Access Reviews" ON public.reviews;
 CREATE POLICY "Public Full Access Reviews" ON public.reviews FOR ALL USING (true) WITH CHECK (true);
+
+-- =============================================================================
+-- 12. CONFIGURATION DU STORAGE SUPABASE (AVATARS, BANNIÈRES, FICHIERS)
+-- =============================================================================
+-- Création automatique des buckets de stockage publics
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES 
+  ('avatars', 'avatars', true, 10485760, ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml', 'image/gif']),
+  ('banners', 'banners', true, 15728640, ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']),
+  ('products', 'products', true, 104857600, NULL),
+  ('nexus-assets', 'nexus-assets', true, 104857600, NULL)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+-- Politiques RLS pour Storage (Lecture & Écriture Publiques)
+DROP POLICY IF EXISTS "Public Access Storage" ON storage.objects;
+CREATE POLICY "Public Access Storage" ON storage.objects FOR SELECT 
+USING (bucket_id IN ('avatars', 'banners', 'products', 'nexus-assets'));
+
+DROP POLICY IF EXISTS "Public Insert Storage" ON storage.objects;
+CREATE POLICY "Public Insert Storage" ON storage.objects FOR INSERT 
+WITH CHECK (bucket_id IN ('avatars', 'banners', 'products', 'nexus-assets'));
+
+DROP POLICY IF EXISTS "Public Update Storage" ON storage.objects;
+CREATE POLICY "Public Update Storage" ON storage.objects FOR UPDATE 
+USING (bucket_id IN ('avatars', 'banners', 'products', 'nexus-assets'));
+
+DROP POLICY IF EXISTS "Public Delete Storage" ON storage.objects;
+CREATE POLICY "Public Delete Storage" ON storage.objects FOR DELETE 
+USING (bucket_id IN ('avatars', 'banners', 'products', 'nexus-assets'));
+
+
